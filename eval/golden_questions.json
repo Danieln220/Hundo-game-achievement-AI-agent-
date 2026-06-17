@@ -1,0 +1,149 @@
+[
+  {
+    "id": "q01",
+    "question": "How many achievements have I unlocked in total across all games?",
+    "expected": "683",
+    "type": "count"
+  },
+  {
+    "id": "q02",
+    "question": "Which of my owned games am I closest to 100% completion on, excluding already completed games?",
+    "expected": "DRAGON BALL Z: KAKAROT",
+    "type": "ranking",
+    "notes": "78.57% complete (33/42 achievements)"
+  },
+  {
+    "id": "q03",
+    "question": "Which games have I fully completed (100% achievements)?",
+    "expected": "Counter-Strike 2",
+    "type": "lookup",
+    "notes": "1/1 achievement unlocked"
+  },
+  {
+    "id": "q04",
+    "question": "What is the rarest achievement I have unlocked?",
+    "expected": "Finnish Ace",
+    "type": "lookup",
+    "notes": "1.3% global unlock rate, from War Thunder"
+  },
+  {
+    "id": "q05",
+    "question": "What is the most common achievement I have unlocked?",
+    "expected": "Supporter",
+    "type": "lookup",
+    "notes": "97.9% global unlock rate, from Game Dev Tycoon"
+  },
+  {
+    "id": "q06",
+    "question": "Which game have I played the most?",
+    "expected": "Microsoft Flight Simulator (2020)",
+    "type": "lookup",
+    "notes": "62060 minutes of playtime"
+  },
+  {
+    "id": "q07",
+    "question": "Which of my games have no achievements at all?",
+    "expected": "GROUND BRANCH, DCS World Steam Edition, Earth 2140 HD, Brick Rigs, BattleBit Remastered, Swords of Legends Online, Schedule I: Free Sample",
+    "type": "lookup",
+    "notes": "7 games with no achievement schema"
+  },
+  {
+    "id": "q08",
+    "question": "How many achievements across all my games have hidden descriptions?",
+    "expected": "469",
+    "type": "count"
+  },
+  {
+    "id": "q09",
+    "question": "How many hidden achievements have I unlocked?",
+    "expected": "43",
+    "type": "count"
+  },
+  {
+    "id": "q10",
+    "question": "Which game has the most achievements?",
+    "expected": "Assetto Corsa",
+    "type": "lookup",
+    "notes": "709 total achievements"
+  },
+  {
+    "id": "q11",
+    "question": "What percentage of Left 4 Dead 2 achievements have I unlocked?",
+    "expected": "2.97,3.0",
+    "type": "percentage",
+    "notes": "3 out of 101 achievements"
+  },
+  {
+    "id": "q12",
+    "question": "How many of my games have I made at least some progress on?",
+    "expected": "49",
+    "type": "count",
+    "notes": "49 games with at least 1 achievement unlocked"
+  },
+  {
+    "id": "q13",
+    "question": "What is my average completion percentage across all games with achievements?",
+    "expected": "16.53,16.5,17",
+    "type": "percentage"
+  },
+  {
+    "id": "q14",
+    "question": "Which game have I unlocked the most achievements in?",
+    "expected": "Company of Heroes 2",
+    "type": "lookup",
+    "notes": "73 achievements unlocked out of 452 (16.15%)"
+  },
+  {
+    "id": "q15",
+    "question": "What was the most recent achievement I unlocked and in which game?",
+    "expected": "Rank 3,War Thunder",
+    "type": "lookup",
+    "notes": "Unlocked 2026-05-26"
+  },
+  {
+    "id": "q16",
+    "question": "How many achievements have I unlocked that are rarer than 5% globally?",
+    "expected": "35",
+    "type": "count"
+  },
+  {
+    "id": "q17",
+    "question": "What is my completion percentage in Rocket League?",
+    "expected": "75",
+    "type": "percentage",
+    "notes": "66 out of 88 achievements"
+  },
+  {
+    "id": "q18",
+    "question": "Which of my games that have at least one achievement unlocked has the lowest completion percentage?",
+    "expected": "Total War: SHOGUN 2",
+    "type": "ranking",
+    "notes": "1.89% complete (2/106 achievements)"
+  },
+  {
+    "id": "q19",
+    "question": "How many achievements does Assetto Corsa have and how many have I unlocked?",
+    "expected": "709",
+    "type": "count"
+  },
+  {
+    "id": "q20",
+    "question": "What are the top 3 rarest achievements I have unlocked?",
+    "expected": "Finnish Ace",
+    "type": "ranking"
+  },
+  {
+    "id": "q21",
+    "question": "What is the single easiest achievement I have NOT yet unlocked in Rocket League (easiest = highest global unlock percentage)?",
+    "expected": "Friendly",
+    "type": "lookup",
+    "notes": "40.0% global unlock rate — most common RL achievement the player is missing"
+  },
+  {
+    "id": "q22",
+    "question": "Among my games that I have started but not yet fully completed, which one am I the fewest achievements away from finishing?",
+    "expected": "Company of Heroes 3",
+    "type": "ranking",
+    "notes": "6 achievements remaining"
+  }
+]
