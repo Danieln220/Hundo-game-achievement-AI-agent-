@@ -48,7 +48,8 @@ def resolve_steam_id(user_input: str) -> str:
     steam_id = steam_client.resolve_vanity_url(vanity)
     if not steam_id:
         raise SteamResolveError(
-            f"Couldn't find a Steam profile for '{user_input}'. "
-            "Paste your full profile URL (steamcommunity.com/id/... or /profiles/...)."
+            f"Couldn't find a Steam profile for '{user_input}'. That might be your in-game "
+            "display name, which can't be searched — use your custom URL alias (the name in "
+            "steamcommunity.com/id/…) or paste your full profile URL."
         )
     return steam_id

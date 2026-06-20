@@ -58,7 +58,7 @@ frames = load_frames(_steam_id) if _steam_id else load_frames()
 # sub-imports pandas/matplotlib do internally.
 _ALLOWED_ROOTS = {
     "pandas", "numpy", "matplotlib", "mpl_toolkits",
-    "datetime", "math", "statistics", "decimal", "fractions",
+    "datetime", "time", "math", "statistics", "decimal", "fractions",
     "itertools", "functools", "collections", "re", "json",
 }
 _real_import = _builtins.__import__
@@ -94,6 +94,7 @@ _ns = {
     "pd": pd,
     "np": np,
     "plt": plt,
+    "json": json,
     "matplotlib": matplotlib,
     "games":          frames["games"],
     "achievements":   frames["achievements"],

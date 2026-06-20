@@ -9,20 +9,28 @@ Scoring: case-insensitive substring match. For comma-separated expected values
 import argparse
 import json
 import re
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
 from agent import run
 
+# LLM answers can contain non-cp1252 chars (typographic dashes, accents); print UTF-8.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 GOLDEN      = Path(__file__).parent / "golden_questions.json"
 RESULTS_OUT = Path(__file__).parent / "last_run.json"
 
 
 def _normalize(text: str) -> str:
-    """Strip markdown formatting and quotation marks, then normalise whitespace."""
-    text = re.sub(r"\*+", "", text)       # **bold** / *italic*
-    text = re.sub(r'["\']', "", text)     # straight and curly quotes
+    """Strip markdown/quotes, fold unicode dashes to '-', normalise whitespace."""
+    text = re.sub(r"\*+", "", text)                 # **bold** / *italic*
+    text = re.sub(r'["\']', "", text)               # straight and curly quotes
+    text = re.sub(r"[‐-―−]", "-", text)  # ‑ – — − → ASCII hyphen
     return re.sub(r"\s+", " ", text).strip().lower()
 
 

@@ -48,13 +48,22 @@ if _missing:
 with st.sidebar:
     st.header("Your Steam profile")
     st.caption(
-        "Paste your profile URL or custom ID. Your profile's game details "
-        "must be **Public**."
+        "Enter your Steam **alias** (custom URL name), your SteamID, or your "
+        "profile link. Your profile's game details must be **Public**."
     )
     user_input = st.text_input(
-        "Steam ID / URL",
-        placeholder="steamcommunity.com/id/yourname",
+        "Steam alias, ID, or URL",
+        placeholder="e.g. daniel",
     )
+    with st.expander("Where do I find this?"):
+        st.markdown(
+            "- **Alias** = the custom name in your profile URL: "
+            "`steamcommunity.com/id/`**`daniel`** → just type `daniel`.\n"
+            "- No custom URL? Paste the full link (works with "
+            "`/id/...` or `/profiles/7656...`) or your 17-digit SteamID.\n"
+            "- Note: your in-game **display name** can't be searched — use the "
+            "alias from your profile URL instead."
+        )
     load_clicked = st.button("Load my data", type="primary")
 
     if load_clicked and user_input:
@@ -63,6 +72,7 @@ with st.sidebar:
                 steam_id = resolve_steam_id(user_input)
             _fetch_with_progress(steam_id)
             st.session_state["steam_id"] = steam_id
+            st.session_state["chat"] = []   # fresh conversation per profile
             st.success(f"Loaded profile {steam_id}.")
         except SteamResolveError as e:
             st.error(str(e))
@@ -94,52 +104,81 @@ if not active_id:
     st.info("👈 Enter your Steam profile in the sidebar to get started.")
     st.stop()
 
+st.session_state.setdefault("chat", [])
+
+
+def _render_trace(result: dict) -> None:
+    with st.expander("Reasoning trace", expanded=False):
+        plan = result.get("plan", "")
+        if plan:
+            st.subheader("Plan")
+            st.markdown(plan)
+        if result.get("interpretation"):
+            st.caption(f"Interpretation: {result['interpretation']}")
+
+        code_history = result.get("code_history") or []
+        if code_history:
+            st.subheader("Code attempts")
+            for i, code in enumerate(code_history, 1):
+                st.code(code, language="python", line_numbers=True)
+                if i < len(code_history):
+                    st.caption(f"↑ Attempt {i} not accepted — retried")
+
+        retries = result.get("retries", 0)
+        last_error = result.get("last_error")
+        st.subheader("Stats")
+        st.write(f"**Code attempts:** {retries}")
+        if last_error and not (result.get("answer") or "").startswith("I couldn"):
+            st.warning(f"Recovered from error: {last_error}")
+        elif last_error:
+            st.error(f"Final error: {last_error}")
+
+        raw = result.get("last_result")
+        if raw:
+            st.write("**Raw computed result:**")
+            st.code(raw)
+
+
+def _render_extras(result: dict, chart_path) -> None:
+    """Insight + chart + trace, shared by live and replayed turns."""
+    if result.get("insight"):
+        st.info(f"💡 {result['insight']}")
+    if chart_path:
+        st.image(chart_path)
+    if result.get("plan") or result.get("code_history"):
+        _render_trace(result)
+
+
+# Replay the conversation so far (stored chart paths — no regeneration).
+for turn in st.session_state["chat"]:
+    st.chat_message("user").write(turn["question"])
+    with st.chat_message("assistant"):
+        st.write(turn["result"].get("answer", "(no answer)"))
+        _render_extras(turn["result"], turn.get("chart_path"))
+
 question = st.chat_input("e.g. Which of my games am I closest to 100% on?")
 
 if question:
     st.chat_message("user").write(question)
 
     with st.chat_message("assistant"):
+        history = [
+            {"question": t["question"], "answer": t["result"].get("answer", "")}
+            for t in st.session_state["chat"]
+        ]
         with st.spinner("Thinking..."):
-            result = run(question, steam_id=active_id)
+            result = run(question, steam_id=active_id, history=history, with_insight=True)
 
-        # ── Answer (shown immediately) ────────────────────────────────────────
+        # Answer first (perceived speed), then the slower chart in a second pass.
         st.write(result.get("answer", "(no answer)"))
 
-        # ── Chart (second pass — doesn't block the answer above) ───────────────
+        chart_path = None
         if result.get("chart_pending"):
             with st.spinner("Generating chart..."):
                 chart_path = make_chart(result)
-            if chart_path:
-                st.image(chart_path)
 
-        # ── Reasoning trace ───────────────────────────────────────────────────
-        with st.expander("Reasoning trace", expanded=False):
+        _render_extras(result, chart_path)
 
-            plan = result.get("plan", "")
-            if plan:
-                st.subheader("Plan")
-                st.markdown(plan)
-
-            code_history = result.get("code_history") or []
-            if code_history:
-                st.subheader("Code attempts")
-                for i, code in enumerate(code_history, 1):
-                    st.code(code, language="python", line_numbers=True)
-                    if i < len(code_history):
-                        st.caption(f"↑ Attempt {i} failed — retried")
-
-            retries = result.get("retries", 0)
-            last_error = result.get("last_error")
-            st.subheader("Stats")
-            st.write(f"**Code attempts:** {retries}")
-
-            if last_error and not result.get("answer", "").startswith("I couldn"):
-                st.warning(f"Recovered from error: {last_error}")
-            elif last_error:
-                st.error(f"Final error: {last_error}")
-
-            raw = result.get("last_result")
-            if raw:
-                st.write("**Raw computed result:**")
-                st.code(raw)
+    st.session_state["chat"].append(
+        {"question": question, "result": result, "chart_path": chart_path}
+    )

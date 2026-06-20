@@ -145,5 +145,12 @@
     "expected": "Company of Heroes 3",
     "type": "ranking",
     "notes": "6 achievements remaining"
+  },
+  {
+    "id": "q23",
+    "question": "Build me a roadmap to 100% Rocket League",
+    "expected": "Friendly,66/88",
+    "type": "roadmap",
+    "notes": "Flagship roadmap: 66/88 unlocked, 22 remaining, easiest locked is Friendly (40%)"
   }
 ]
