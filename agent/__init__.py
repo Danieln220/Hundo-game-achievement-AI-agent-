@@ -96,4 +96,10 @@ def make_chart(result: dict) -> Optional[str]:
         return None
     steam_id = result.get("steam_id") or STEAM_ID
     frames = load_frames(steam_id)
-    return generate_chart(result, frames)
+    state = dict(result)
+    if not state.get("schema"):
+        # The API drops the large schema from responses; rebuild it from frames
+        # so a chart can be generated from just the lightweight result echo.
+        from .graph import _build_schema
+        state["schema"] = _build_schema(frames)
+    return generate_chart(state, frames)

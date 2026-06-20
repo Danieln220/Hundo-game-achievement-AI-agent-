@@ -172,8 +172,8 @@ if question:
         # Answer first (perceived speed), then the slower chart in a second pass.
         st.write(result.get("answer", "(no answer)"))
 
-        chart_path = None
-        if result.get("chart_pending"):
+        chart_path = result.get("chart_path")   # some nodes (e.g. audit) make their own
+        if not chart_path and result.get("chart_pending"):
             with st.spinner("Generating chart..."):
                 chart_path = make_chart(result)
 

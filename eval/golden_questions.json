@@ -152,5 +152,12 @@
     "expected": "Friendly,66/88",
     "type": "roadmap",
     "notes": "Flagship roadmap: 66/88 unlocked, 22 remaining, easiest locked is Friendly (40%)"
+  },
+  {
+    "id": "q24",
+    "question": "Give me a full audit of my profile",
+    "expected": "683,Finnish Ace",
+    "type": "audit",
+    "notes": "Flagship audit: 683 total unlocked, rarest flex Finnish Ace (1.3%)"
   }
 ]

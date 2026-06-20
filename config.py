@@ -23,6 +23,10 @@ DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.co
 DEEPSEEK_MODEL_PRO   = os.environ.get("DEEPSEEK_MODEL_PRO",   "deepseek-v4-pro")    # write_code, finalize, roadmap
 DEEPSEEK_MODEL_FLASH = os.environ.get("DEEPSEEK_MODEL_FLASH", "deepseek-v4-flash")  # planner, router, validate
 
+# Comma-separated allowed origins for the FastAPI backend (React phase).
+# Default "*" for local dev; tighten to the frontend's domain in production.
+CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+
 MAX_RETRIES = 3            # bound the self-correction loop (total code attempts)
 EXEC_TIMEOUT_SECONDS = 10  # hard timeout for sandboxed code
 EXEC_MEMORY_MB = 512       # address-space cap for sandboxed code (POSIX only)

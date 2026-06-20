@@ -21,6 +21,6 @@ requests==2.33.0
 python-dotenv==1.2.1
 truststore==0.10.4
 
-# --- API upgrade phase only (uncomment when you build the React frontend) ---
-# fastapi
-# uvicorn
+# --- API backend (FastAPI) ---
+fastapi==0.138.0
+uvicorn[standard]==0.46.0

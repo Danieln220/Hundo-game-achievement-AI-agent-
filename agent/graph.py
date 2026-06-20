@@ -34,7 +34,7 @@ class AgentState(TypedDict, total=False):
     with_insight: bool                 # generate a proactive nudge (UI on, eval off)
     schema: str                        # compact description of the DataFrames
     plan: str
-    route: Literal["analysis", "howto", "clarify", "chitchat", "roadmap"]
+    route: Literal["analysis", "howto", "clarify", "chitchat", "roadmap", "audit"]
     interpretation: Optional[str]      # how the agent read an ambiguous question
     clarify_question: Optional[str]    # question to ask back when route == clarify
     last_code: str
@@ -86,7 +86,7 @@ pd.to_datetime(value, unit='s').strftime('%Y-%m-%d') — this needs NO import (p
 Do NOT write `import time` or `import datetime`. NEVER return a raw Unix integer.
 
 Respond in this EXACT format:
-ROUTE: analysis | howto | clarify | chitchat | roadmap
+ROUTE: analysis | howto | clarify | chitchat | roadmap | audit
 INTERPRETATION: <one line on how you read ambiguous wording, or NONE>
 CLARIFY: <a single clarifying question, or NONE>
 PLAN:
@@ -106,6 +106,9 @@ Routing:
   Rocket League", "path to my next 50 achievements", "what should I grind to finish X"). ALSO use
   roadmap when the user is REFINING a roadmap from earlier in the conversation ("only the easy
   ones", "skip multiplayer", "what about <other game>"). (Leave CODE empty — a dedicated step builds it.)
+- audit: the user wants a FULL profile overview / report / summary across their WHOLE library
+  ("audit my profile", "give me a full report", "analyze my whole profile", "profile summary").
+  (Leave CODE empty — a dedicated step builds it.)
 
 Ambiguity — prefer a sensible default over clarifying. If mildly ambiguous, use ROUTE: analysis,
 state your reading in INTERPRETATION, and write code that follows it. Resolve follow-ups
@@ -150,6 +153,36 @@ result = json.dumps({
 })
 
 Output ONLY raw python, no markdown fences."""
+
+_AUDIT_CODE_SYSTEM = """You are a pandas expert computing a FULL profile-audit dataset in one pass.
+
+Pre-loaded (do NOT redefine, do NOT import): games, achievements, player_unlocks, pd, np, json.
+
+CRITICAL column meanings:
+- player_unlocks.achieved = whether THIS PLAYER unlocked the achievement.
+- achievements.rarity_pct = % of ALL players who unlocked it (float, may be NaN).
+- unlock_time = Unix seconds (use pd.to_datetime(x, unit='s') for dates).
+
+Compute these and return them as ONE json (assign to `result`). Only count games that HAVE
+achievements where a completion % is needed. "Started" = >=1 achievement unlocked.
+
+result = json.dumps({
+  "total_unlocked":   <int achievements the player has unlocked>,
+  "total_achievements": <int total achievements across games that have them>,
+  "overall_pct":      <float total_unlocked / total_achievements * 100>,
+  "games_total":      <int owned games>,
+  "games_started":    <int games with >=1 unlock>,
+  "games_completed":  <int games at 100%>,
+  "rarest":   {"name": <display_name>, "rarity_pct": <float>, "game": <game name>},   # rarest UNLOCKED
+  "easy_wins":[{"name":..., "rarity_pct":..., "game":...}, ...],   # 5 LOCKED achievements, highest rarity
+  "abandoned":[{"game":..., "pct": <float>, "remaining": <int>}, ...],  # started, <10% complete, up to 5
+  "momentum": {"last_unlock": <"YYYY-MM-DD" of most recent unlock>, "unlocks_last_30d": <int>},
+  "focus":    {"game":..., "remaining": <int>, "pct": <float>},   # started, <100%, FEWEST remaining
+  "completion_by_game":[{"game":..., "pct": <float>}, ...]   # top 10 games by completion %, for a chart
+})
+
+For momentum use the player's unlocked rows only; "last 30 days" = within 30 days of the latest unlock
+in the data. Output ONLY raw python, no markdown fences."""
 
 _HOWTO_SYSTEM = """You are a Steam achievement guide assistant.
 Given the user's question and a few web search snippets, write a practical,
@@ -367,6 +400,8 @@ def plan_code_node(state: AgentState) -> AgentState:
                 route = "chitchat"
             elif "roadmap" in low:
                 route = "roadmap"
+            elif "audit" in low:
+                route = "audit"
             else:
                 route = "analysis"
         elif line.startswith("INTERPRETATION:"):
@@ -620,6 +655,129 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
     return {"answer": "\n".join(parts), "code_history": [code], "done": True}
 
 
+# ── Profile Audit (flagship) ──────────────────────────────────────────────────
+
+_AUDIT_NARRATIVE_SYSTEM = """You are a Steam achievement coach. Given a JSON profile summary, write
+ONE warm, encouraging opening sentence for an audit report (no stats dumps, no lists — just a
+human framing of where the player is at). Recent 2026 dates are valid, not errors."""
+
+
+def _audit_chart(cbg: list, frames: dict, steam_id: Optional[str]) -> Optional[str]:
+    """Render the 'completion % by top games' bar chart for the audit."""
+    if not cbg:
+        return None
+    _CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    cp = str(_CHARTS_DIR / f"{uuid.uuid4().hex}.png")
+    names = [d.get("game", "") for d in cbg][:10]
+    pcts  = [d.get("pct", 0) for d in cbg][:10]
+    code = (
+        f"CHART_PATH = {cp!r}\nnames = {names!r}\npcts = {pcts!r}\n"
+        "y = list(range(len(names)))\n"
+        "fig, ax = plt.subplots(figsize=(10, 6))\n"
+        "ax.barh(y, pcts, color='steelblue')\n"
+        "ax.set_yticks(y); ax.set_yticklabels(names); ax.invert_yaxis()\n"
+        "ax.set_xlabel('Completion %'); ax.set_title('Top games by completion')\n"
+        "plt.tight_layout(); plt.savefig(CHART_PATH, bbox_inches='tight', dpi=120); plt.close()\n"
+        "result = CHART_PATH\n"
+    )
+    _, err = run_user_code(code, frames, steam_id)
+    return cp if (not err and Path(cp).exists()) else None
+
+
+def audit_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
+    """Flagship: autonomous profile audit. One Pro call computes a battery of
+    grounded metrics (sandbox JSON), then we synthesize a structured, charted
+    report — multi-step analysis orchestrated behind a single request."""
+    # The audit query is complex (6 sections), so retry once with error feedback
+    # if the generated code crashes or returns invalid JSON.
+    data, code, err_ctx = None, "", ""
+    for _ in range(2):
+        prompt = (
+            f"Schema:\n{state['schema']}\n\n"
+            f"{err_ctx}"
+            f"Question: {state['question']}"
+        )
+        raw = call_llm(prompt, model=DEEPSEEK_MODEL_PRO, system=_AUDIT_CODE_SYSTEM)
+        code = _extract_code(raw)
+        result, error = run_user_code(code, frames, state.get("steam_id"))
+        if error:
+            err_ctx = f"Your previous code FAILED — fix it:\n{error}\n\n"
+            continue
+        try:
+            data = json.loads(result)
+            break
+        except Exception as exc:
+            err_ctx = f"Your previous result was not valid JSON ({exc}). Return json.dumps(...).\n\n"
+
+    if not data:
+        return {
+            "answer": "I couldn't build an audit right now — please try again.",
+            "code_history": [code],
+            "done": True,
+        }
+
+    # Short LLM narrative intro (today's date injected so 2026 dates aren't flagged).
+    try:
+        intro = call_llm(
+            f"Today is {date.today().isoformat()}.\nProfile summary JSON:\n{result[:1500]}",
+            model=DEEPSEEK_MODEL_FLASH, system=_AUDIT_NARRATIVE_SYSTEM,
+        ).strip()
+    except Exception:
+        intro = ""
+
+    chart_path = _audit_chart(data.get("completion_by_game") or [], frames, state.get("steam_id"))
+
+    g = data.get
+    parts = ["## 🔍 Profile Audit"]
+    if intro:
+        parts.append(f"\n{intro}")
+    parts.append(
+        f"\n**Overview** — {g('total_unlocked', 0)}/{g('total_achievements', 0)} achievements "
+        f"({g('overall_pct', 0):.1f}%) · {g('games_started', 0)}/{g('games_total', 0)} games started · "
+        f"{g('games_completed', 0)} fully completed"
+    )
+
+    rarest = data.get("rarest") or {}
+    if rarest.get("name"):
+        r = rarest.get("rarity_pct")
+        rp = f"{r:.1f}%" if isinstance(r, (int, float)) else "?"
+        parts.append(f"\n**🏆 Rarest flex** — {rarest['name']} ({rp}) in {rarest.get('game', '?')}")
+
+    easy = data.get("easy_wins") or []
+    if easy:
+        lines = "\n".join(
+            f"- **{a.get('name')}** ({a.get('rarity_pct'):.0f}% have it) — {a.get('game')}"
+            for a in easy if isinstance(a.get("rarity_pct"), (int, float))
+        )
+        if lines:
+            parts.append(f"\n**🟢 Easy wins to grab**\n{lines}")
+
+    abandoned = data.get("abandoned") or []
+    if abandoned:
+        lines = "\n".join(
+            f"- {a.get('game')} — {a.get('pct', 0):.0f}% ({a.get('remaining', 0)} left)"
+            for a in abandoned
+        )
+        parts.append(f"\n**💤 Stalled games**\n{lines}")
+
+    mom = data.get("momentum") or {}
+    if mom.get("last_unlock"):
+        parts.append(
+            f"\n**📈 Momentum** — last unlock {mom['last_unlock']} · "
+            f"{mom.get('unlocks_last_30d', 0)} in the last 30 days"
+        )
+
+    focus = data.get("focus") or {}
+    if focus.get("game"):
+        parts.append(
+            f"\n**🎯 Recommended focus** — {focus['game']}, only {focus.get('remaining', 0)} "
+            f"achievements left ({focus.get('pct', 0):.0f}%)"
+        )
+        parts.append(f"\n_Want a roadmap for {focus['game']}? Just ask._")
+
+    return {"answer": "\n".join(parts), "chart_path": chart_path, "code_history": [code], "done": True}
+
+
 def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
     """Produce the final answer AND self-verify — concurrently.
 
@@ -682,7 +840,7 @@ def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSt
 
 def route_after_plan_code(
     state: AgentState,
-) -> Literal["execute_code", "howto_search", "clarify", "chitchat", "roadmap"]:
+) -> Literal["execute_code", "howto_search", "clarify", "chitchat", "roadmap", "audit"]:
     route = state.get("route")
     if route == "howto":
         return "howto_search"
@@ -692,6 +850,8 @@ def route_after_plan_code(
         return "chitchat"
     if route == "roadmap":
         return "roadmap"
+    if route == "audit":
+        return "audit"
     return "execute_code"
 
 
@@ -721,6 +881,7 @@ def build_graph(frames: dict[str, pd.DataFrame]):
     g.add_node("clarify",        clarify_node)
     g.add_node("chitchat",       chitchat_node)
     g.add_node("roadmap",        lambda s: roadmap_node(s, frames))
+    g.add_node("audit",          lambda s: audit_node(s, frames))
     g.add_node("execute_code",   lambda s: execute_code_node(s, frames))
     g.add_node("validate_output", validate_output_node)
     g.add_node("howto_search",   howto_search_node)
@@ -737,5 +898,6 @@ def build_graph(frames: dict[str, pd.DataFrame]):
     g.add_edge("clarify", END)        # clarify yields a question back to the user
     g.add_edge("chitchat", END)       # chitchat yields a friendly reply itself
     g.add_edge("roadmap", END)        # roadmap yields the full plan itself
+    g.add_edge("audit", END)          # audit yields the full report itself
     g.add_edge("howto_search", END)   # how-to node yields the final answer itself
     return g.compile()
