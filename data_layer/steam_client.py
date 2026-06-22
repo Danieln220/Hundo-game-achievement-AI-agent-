@@ -28,6 +28,25 @@ def resolve_vanity_url(vanity: str) -> Optional[str]:
     return None
 
 
+def get_player_summary(steam_id: str) -> dict:
+    """ISteamUser/GetPlayerSummaries — basic profile. When the user is currently
+    in a game (and their profile is public) the player object includes
+    `gameid` and `gameextrainfo`. Used by watch mode to auto-detect the active
+    game. Returns the single player dict (or {} if unavailable)."""
+    resp = requests.get(
+        f"{BASE}/ISteamUser/GetPlayerSummaries/v0002/",
+        params={
+            "key": config.STEAM_API_KEY,
+            "steamids": steam_id,
+            "format": "json",
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    players = resp.json().get("response", {}).get("players", [])
+    return players[0] if players else {}
+
+
 def get_owned_games(steam_id: str) -> dict:
     """IPlayerService/GetOwnedGames — games + playtime + app info."""
     resp = requests.get(
