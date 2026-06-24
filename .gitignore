@@ -5,8 +5,10 @@ __pycache__/
 venv/
 data/snapshot/
 data/charts/
+data/search_cache/
 eval/last_run.json
 .streamlit/secrets.toml
 CLAUDE.md
 web/node_modules/
 web/dist/
+PROJECT_SUMMARY.md

@@ -34,6 +34,12 @@ EXEC_MAX_OUTPUT_CHARS = 20000  # truncate sandbox result so a huge dump can't fl
 LLM_TIMEOUT_SECONDS = 60   # per-call timeout for the LLM client
 SNAPSHOT_DIR = "data/snapshot"  # base dir; each user gets a <steam_id>/ subdir
 
+# Disposable charts: generated PNGs are regenerable from the snapshot, so the API
+# sweeps data/charts/ to keep it from growing unbounded (one file per question).
+# Deletes files older than the TTL, then caps the dir to the newest N files.
+CHART_TTL_HOURS = float(os.environ.get("CHART_TTL_HOURS", "6"))
+CHART_MAX_FILES = int(os.environ.get("CHART_MAX_FILES", "50"))
+
 
 def missing_secrets() -> list[str]:
     """Return the names of required secrets that are not set.

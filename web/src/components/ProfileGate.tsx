@@ -1,14 +1,41 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { session } from "../api";
+import type { SessionResult } from "../types";
+
+// Staged labels shown during the (synchronous) snapshot build. These are
+// time-driven, NOT real progress — /session blocks until done and exposes no
+// percentage. A true progress bar needs the async snapshot build deferred to
+// Step 15; until then this is an honest "here's roughly what's happening" cycle.
+const STAGES = [
+  "Resolving your profile…",
+  "Fetching your library…",
+  "Building your trophy case…",
+  "Crunching achievement rarity…",
+  "Almost there…",
+];
 
 export default function ProfileGate({
   onLoaded,
 }: {
-  onLoaded: (steamId: string, games: number) => void;
+  onLoaded: (session: SessionResult) => void;
 }) {
   const [value, setValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stage, setStage] = useState(0);
+
+  // Advance the stage label every ~6s while loading (caps at the last stage).
+  useEffect(() => {
+    if (!loading) {
+      setStage(0);
+      return;
+    }
+    const id = setInterval(
+      () => setStage((s) => Math.min(s + 1, STAGES.length - 1)),
+      6000
+    );
+    return () => clearInterval(id);
+  }, [loading]);
 
   async function load() {
     if (!value.trim() || loading) return;
@@ -16,7 +43,7 @@ export default function ProfileGate({
     setError(null);
     try {
       const r = await session(value.trim());
-      onLoaded(r.steam_id, r.games);
+      onLoaded(r);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -26,10 +53,11 @@ export default function ProfileGate({
 
   return (
     <div className="gate">
-      <h2>Analyze your Steam achievements</h2>
+      <h2>Open your trophy case</h2>
       <p className="muted">
-        Enter your Steam alias, ID, or profile link. Your profile's game details
-        must be <b>Public</b>.
+        Your achievements, read like rare cards — rarity, roadmaps, and a full
+        profile audit. Enter your Steam alias, ID, or profile link to begin.
+        Game details must be <b>Public</b>.
       </p>
 
       <div className="gate-row">
@@ -47,7 +75,12 @@ export default function ProfileGate({
       </div>
 
       {loading && (
-        <p className="muted">Fetching your library (first time only, ~15–30s)…</p>
+        <div className="gate-progress">
+          <div className="indeterminate-bar">
+            <div className="indeterminate-fill" />
+          </div>
+          <p className="muted small">{STAGES[stage]} <span className="muted">(first time only, ~15–30s)</span></p>
+        </div>
       )}
       {error && <p className="error">{error}</p>}
 

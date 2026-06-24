@@ -8,7 +8,6 @@ Both the Streamlit app (now) and the future FastAPI backend import this:
 Keep ALL UI code out of this package. If app.py stays thin and only calls
 run(), the React + FastAPI upgrade is 'wrap run() in an endpoint', not a
 rewrite."""
-import re
 from typing import Optional
 
 from config import STEAM_ID, DEEPSEEK_MODEL_FLASH
@@ -16,27 +15,32 @@ from data_layer.snapshot import load_frames
 from .graph import build_graph, generate_chart
 from .llm import call_llm
 
-# Greetings / small-talk skip the analysis pipeline and get ONE fast Flash reply
-# (the LLM still answers — it just doesn't pay for a full plan+code+verify round-trip).
-_GREETINGS = {
-    "hi", "hello", "hey", "yo", "hiya", "howdy", "sup", "hii", "helloo", "hello there",
-    "good morning", "good afternoon", "good evening", "gm",
-    "thanks", "thank you", "ty", "thx", "cheers", "thank u",
-    "how are you", "hows it going", "whats up", "wassup",
-    "what can you do", "what do you do", "who are you", "what are you", "help",
-}
-_CHITCHAT_SYSTEM = (
-    "You are Hundo, a friendly Steam achievement analyst. The user sent a greeting or "
-    "small-talk. Reply warmly in ONE short sentence and invite them to ask about their "
-    "Steam achievements (e.g. games closest to 100%, rarest achievements, how to unlock a "
-    "specific achievement). Do not invent any stats."
+# The AI itself decides whether a message is small-talk vs a real data question —
+# no hardcoded word lists. ONE cheap Flash call either returns a friendly reply, or
+# the __DATA__ sentinel meaning "this needs the analysis pipeline."
+_DATA_TOKEN = "__DATA__"
+_TRIAGE_REPLY_SYSTEM = (
+    "You are Hundo, a friendly Steam achievement analyst.\n"
+    "If the user's message is a greeting, thanks, small-talk, or a question about you or your "
+    "capabilities (NOT a question about their Steam games/achievements), reply warmly in ONE "
+    "short sentence and invite them to ask about their achievements.\n"
+    "If instead it IS a question about their Steam data, reply with EXACTLY this token and "
+    f"nothing else: {_DATA_TOKEN}\n"
+    "IMPORTANT: Anything that names or refers to a specific game, or asks about achievements, "
+    "completion, rarity, what to play, how to unlock something, OR HOW LONG / how many hours / "
+    "time to complete or 100% a game, is a DATA question — emit the token and do NOT answer it "
+    "yourself from general knowledge. When unsure, emit the token."
 )
 
 
-def _is_greeting(text: str) -> bool:
-    norm = re.sub(r"[^a-z' ]", "", text.lower())
-    norm = re.sub(r"\s+", " ", norm).strip()
-    return norm in _GREETINGS
+def _smalltalk_reply(question: str) -> Optional[str]:
+    """One cheap Flash call. Returns a greeting/small-talk reply, or None if the
+    message is a real data question (the model emits the __DATA__ sentinel)."""
+    try:
+        resp = call_llm(question, model=DEEPSEEK_MODEL_FLASH, system=_TRIAGE_REPLY_SYSTEM).strip()
+    except Exception:
+        return None  # on any failure, fall through to the normal pipeline
+    return None if _DATA_TOKEN in resp else resp
 
 
 def run(
@@ -58,10 +62,10 @@ def run(
     if not question or not question.strip():
         return {"answer": "Please enter a question.", "done": True}
 
-    # Greeting / small-talk → one fast Flash reply, skip the analysis pipeline.
-    if _is_greeting(question):
-        return {"answer": call_llm(question, model=DEEPSEEK_MODEL_FLASH, system=_CHITCHAT_SYSTEM),
-                "done": True}
+    # Small-talk → one fast Flash reply, skip the analysis pipeline (AI decides).
+    reply = _smalltalk_reply(question)
+    if reply:
+        return {"answer": reply, "done": True}
 
     steam_id = steam_id or STEAM_ID
     frames = load_frames(steam_id)
@@ -83,6 +87,49 @@ def run(
         "with_insight": with_insight,
         "retries": 0,
     })
+
+
+def run_stream(
+    question: str,
+    steam_id: Optional[str] = None,
+    history: Optional[list[dict]] = None,
+    with_insight: bool = False,
+):
+    """Streaming variant of run() for live progress. Yields ("progress", node_name)
+    as each graph node fires, then ("result", final_state) at the end. The fast
+    paths (empty / greeting / no snapshot) yield a single ("result", ...)."""
+    if not question or not question.strip():
+        yield "result", {"answer": "Please enter a question.", "done": True}
+        return
+
+    reply = _smalltalk_reply(question)
+    if reply:
+        yield "result", {"answer": reply, "done": True}
+        return
+
+    steam_id = steam_id or STEAM_ID
+    frames = load_frames(steam_id)
+    if not frames or all(df.empty for df in frames.values()):
+        yield "result", {"answer": "No snapshot data found for this profile.", "done": True}
+        return
+
+    app = build_graph(frames)
+    inp = {
+        "question": question,
+        "steam_id": steam_id,
+        "history": history or [],
+        "with_insight": with_insight,
+        "retries": 0,
+    }
+    final: dict = {}
+    # "updates" tells us which node just ran (progress); "values" carries the full state.
+    for mode, chunk in app.stream(inp, stream_mode=["updates", "values"]):
+        if mode == "updates":
+            for node_name in chunk:
+                yield "progress", node_name
+        else:  # values
+            final = chunk
+    yield "result", final
 
 
 def make_chart(result: dict) -> Optional[str]:

@@ -4,6 +4,41 @@ export interface Source {
   content?: string;
 }
 
+export interface Achievement {
+  name: string;
+  rarity_pct?: number | null;
+  description?: string;
+  hidden?: boolean;
+  game?: string;
+}
+
+export interface RoadmapData {
+  target: string;
+  total: number;
+  unlocked: number;
+  pct_done: number;
+  remaining: number;
+  shown?: number;
+  tiers: { quick: Achievement[]; moderate: Achievement[]; challenge: Achievement[] };
+  tier_counts: { quick: number; moderate: number; challenge: number };
+  howto: { name: string; url: string }[];
+}
+
+export interface AuditData {
+  intro?: string;
+  total_unlocked?: number;
+  total_achievements?: number;
+  overall_pct?: number;
+  games_total?: number;
+  games_started?: number;
+  games_completed?: number;
+  rarest?: Achievement;
+  easy_wins?: Achievement[];
+  abandoned?: { game: string; pct: number; remaining: number }[];
+  momentum?: { last_unlock?: string; unlocks_last_30d?: number };
+  focus?: { game: string; remaining: number; pct: number };
+}
+
 export interface AskResult {
   answer?: string;
   route?: string;
@@ -16,6 +51,8 @@ export interface AskResult {
   retries?: number;
   insight?: string | null;
   sources?: Source[];
+  roadmap?: RoadmapData | null;
+  audit?: AuditData | null;
   chart_pending?: boolean;
   chart_url?: string | null;
   done?: boolean;
@@ -25,7 +62,12 @@ export interface AskResult {
 
 export interface SessionResult {
   steam_id: string;
+  persona: string;
+  avatar: string;
   games: number;
+  unlocked: number;
+  total: number;
+  perfect: number;
 }
 
 export interface Turn {

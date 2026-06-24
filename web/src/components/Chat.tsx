@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from "react";
-import { ask, chart } from "../api";
+import { askStream, chart } from "../api";
 import type { AskResult, Turn } from "../types";
 import Message from "./Message";
+import ProgressSteps from "./ProgressSteps";
+import SuggestionChips from "./SuggestionChips";
 
 interface UserMsg {
   role: "user";
@@ -12,15 +14,9 @@ interface AssistantMsg {
   result: AskResult;
   chartUrl?: string | null;
   chartLoading?: boolean;
+  retryQuestion?: string; // set on error/stop so the message can offer a retry
 }
 type Msg = UserMsg | AssistantMsg;
-
-const EXAMPLES = [
-  "Which games am I closest to finishing?",
-  "What are my top 3 rarest achievements?",
-  "Build me a roadmap to 100% Rocket League",
-  "Give me a full audit of my profile",
-];
 
 export default function Chat({
   steamId,
@@ -32,11 +28,13 @@ export default function Chat({
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, busy]);
+  }, [messages, busy, progress]);
 
   function buildHistory(msgs: Msg[]): Turn[] {
     const turns: Turn[] = [];
@@ -50,17 +48,30 @@ export default function Chat({
     return turns;
   }
 
+  function stop() {
+    abortRef.current?.abort();
+  }
+
   async function send(q: string) {
     if (!q.trim() || busy) return;
     const history = buildHistory(messages);
     const assistantIndex = messages.length + 1; // user pushed, then assistant
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     setMessages((m) => [...m, { role: "user", text: q }]);
     setInput("");
     setBusy(true);
+    setProgress([]);
 
     try {
-      const result = await ask(q, steamId, history);
+      const result = await askStream(
+        q,
+        steamId,
+        history,
+        (node) => setProgress((p) => [...p, node]),
+        controller.signal
+      );
       setMessages((m) => [
         ...m,
         {
@@ -74,7 +85,7 @@ export default function Chat({
       // Answer-first: fetch the chart in a second pass if one is pending.
       if (result.chart_pending && !result.chart_url) {
         try {
-          const c = await chart(result);
+          const c = await chart(result, controller.signal);
           setMessages((m) =>
             m.map((msg, i) =>
               i === assistantIndex && msg.role === "assistant"
@@ -93,12 +104,19 @@ export default function Chat({
         }
       }
     } catch (e) {
+      const err = e as Error;
+      const stopped = err.name === "AbortError";
       setMessages((m) => [
         ...m,
-        { role: "assistant", result: { answer: `⚠️ ${(e as Error).message}` } },
+        {
+          role: "assistant",
+          result: { answer: stopped ? "⏹ Stopped." : `⚠️ ${err.message}` },
+          retryQuestion: q,
+        },
       ]);
     } finally {
       setBusy(false);
+      abortRef.current = null;
     }
   }
 
@@ -108,13 +126,7 @@ export default function Chat({
         {messages.length === 0 && (
           <div className="welcome">
             <p className="muted">Loaded {games} games. Ask me anything — or try:</p>
-            <div className="examples">
-              {EXAMPLES.map((ex) => (
-                <button key={ex} className="example" onClick={() => send(ex)}>
-                  {ex}
-                </button>
-              ))}
-            </div>
+            <SuggestionChips onPick={send} />
           </div>
         )}
 
@@ -128,11 +140,14 @@ export default function Chat({
               result={m.result}
               chartUrl={m.chartUrl}
               chartLoading={m.chartLoading}
+              onAction={send}
+              retryQuestion={m.retryQuestion}
+              onRetry={send}
             />
           )
         )}
 
-        {busy && <div className="thinking">Thinking…</div>}
+        {busy && <ProgressSteps nodes={progress} />}
         <div ref={endRef} />
       </div>
 
@@ -144,9 +159,15 @@ export default function Chat({
           placeholder="Ask about your achievements…"
           disabled={busy}
         />
-        <button onClick={() => send(input)} disabled={busy || !input.trim()}>
-          Send
-        </button>
+        {busy ? (
+          <button className="stop-btn" onClick={stop}>
+            ⏹ Stop
+          </button>
+        ) : (
+          <button onClick={() => send(input)} disabled={!input.trim()}>
+            Send
+          </button>
+        )}
       </div>
     </div>
   );

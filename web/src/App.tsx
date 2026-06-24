@@ -1,10 +1,11 @@
 import { useState } from "react";
 import ProfileGate from "./components/ProfileGate";
+import ProfileHeader from "./components/ProfileHeader";
 import Chat from "./components/Chat";
+import type { SessionResult } from "./types";
 
 export default function App() {
-  const [steamId, setSteamId] = useState<string | null>(null);
-  const [games, setGames] = useState(0);
+  const [session, setSession] = useState<SessionResult | null>(null);
 
   return (
     <div className="app">
@@ -16,22 +17,20 @@ export default function App() {
             <span className="tagline">Steam Achievement Analyst</span>
           </div>
         </div>
-        {steamId && (
-          <button className="switch" onClick={() => setSteamId(null)}>
+        {session && (
+          <button className="switch" onClick={() => setSession(null)}>
             Switch profile
           </button>
         )}
       </header>
 
-      {steamId ? (
-        <Chat steamId={steamId} games={games} />
+      {session ? (
+        <>
+          <ProfileHeader session={session} />
+          <Chat steamId={session.steam_id} games={session.games} />
+        </>
       ) : (
-        <ProfileGate
-          onLoaded={(id, g) => {
-            setSteamId(id);
-            setGames(g);
-          }}
-        />
+        <ProfileGate onLoaded={setSession} />
       )}
     </div>
   );

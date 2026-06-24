@@ -9,6 +9,7 @@ Flow:
 """
 from __future__ import annotations
 
+import difflib
 import json
 import operator
 import re
@@ -22,9 +23,10 @@ import pandas as pd
 from langgraph.graph import START, END, StateGraph
 
 from config import MAX_RETRIES, DEEPSEEK_MODEL_PRO, DEEPSEEK_MODEL_FLASH
+from data_layer import steam_client
 from .sandbox import run_user_code
 from .llm import call_llm
-from .search import web_search
+from .search import web_search, cached_search, cached_json
 
 
 class AgentState(TypedDict, total=False):
@@ -34,7 +36,7 @@ class AgentState(TypedDict, total=False):
     with_insight: bool                 # generate a proactive nudge (UI on, eval off)
     schema: str                        # compact description of the DataFrames
     plan: str
-    route: Literal["analysis", "howto", "clarify", "chitchat", "roadmap", "audit"]
+    route: Literal["analysis", "howto", "clarify", "chitchat", "roadmap", "audit", "timecost"]
     interpretation: Optional[str]      # how the agent read an ambiguous question
     clarify_question: Optional[str]    # question to ask back when route == clarify
     last_code: str
@@ -47,6 +49,8 @@ class AgentState(TypedDict, total=False):
     sources: Annotated[list[dict], operator.add]
     answer: Optional[str]
     insight: Optional[str]             # proactive follow-up suggestion
+    roadmap: Optional[dict]            # structured roadmap data for rich rendering
+    audit: Optional[dict]              # structured audit data for rich rendering
     chart_pending: bool                # True if a chart applies (generated post-answer)
     chart_path: Optional[str]
     done: bool
@@ -86,7 +90,7 @@ pd.to_datetime(value, unit='s').strftime('%Y-%m-%d') — this needs NO import (p
 Do NOT write `import time` or `import datetime`. NEVER return a raw Unix integer.
 
 Respond in this EXACT format:
-ROUTE: analysis | howto | clarify | chitchat | roadmap | audit
+ROUTE: analysis | howto | clarify | chitchat | roadmap | audit | timecost
 INTERPRETATION: <one line on how you read ambiguous wording, or NONE>
 CLARIFY: <a single clarifying question, or NONE>
 PLAN:
@@ -105,9 +109,15 @@ Routing:
 - roadmap: the user wants a PLAN/ROADMAP to complete a game or reach a goal ("plan to 100%
   Rocket League", "path to my next 50 achievements", "what should I grind to finish X"). ALSO use
   roadmap when the user is REFINING a roadmap from earlier in the conversation ("only the easy
-  ones", "skip multiplayer", "what about <other game>"). (Leave CODE empty — a dedicated step builds it.)
+  ones", "skip multiplayer", "what about <other game>"). A roadmap request that ALSO asks to
+  EXCLUDE a category ("skip DLC", "skip multiplayer", "no co-op/online", "base game only") is STILL
+  roadmap — the roadmap step applies that filter itself, so do NOT route clarify (or anything else)
+  just because the data has no column for it. (Leave CODE empty — a dedicated step builds it.)
 - audit: the user wants a FULL profile overview / report / summary across their WHOLE library
   ("audit my profile", "give me a full report", "analyze my whole profile", "profile summary").
+  (Leave CODE empty — a dedicated step builds it.)
+- timecost: the user asks HOW LONG it takes / how much TIME / how many HOURS to complete or 100%
+  a game ("how long to 100% Hollow Knight", "time to complete X", "how many hours to finish Y").
   (Leave CODE empty — a dedicated step builds it.)
 
 Ambiguity — prefer a sensible default over clarifying. If mildly ambiguous, use ROUTE: analysis,
@@ -149,40 +159,60 @@ result = json.dumps({
   "total":    <int total achievements for the target>,
   "unlocked": <int the player has unlocked for the target>,
   "remaining":[ {"name": <display_name>, "rarity_pct": <float or null>,
-                 "description": <str>, "hidden": <bool>}, ... ]   # at most 40, easiest first
+                 "description": <str>, "hidden": <bool>}, ... ]   # at most 60, easiest first
 })
 
 Output ONLY raw python, no markdown fences."""
 
-_AUDIT_CODE_SYSTEM = """You are a pandas expert computing a FULL profile-audit dataset in one pass.
+_ROADMAP_FILTER_SYSTEM = """The user wants a completion roadmap and MAY have asked to exclude
+achievements by THEME/category (e.g. "skip multiplayer", "no DLC", "skip online/co-op", "no PvP").
+You are given the user's request and a numbered list of achievements (name — description).
+
+Reply with ONLY the numbers to REMOVE because they match an exclusion the user asked for,
+comma-separated (e.g. "2, 5, 9"). If the request asks for NO such exclusion, reply EXACTLY: NONE.
+
+Rules: judge by name + description. Do NOT remove for difficulty/rarity ("easy"/"hard") — that's
+handled elsewhere. When unsure whether an achievement matches the exclusion, KEEP it (don't list it).
+Never remove everything."""
+
+# The audit is a battery of INDEPENDENT analyses. Rather than have the model write
+# one huge script in a single ~60s+ call, each group below is generated and run
+# CONCURRENTLY (see audit_node) — same agent-writes-the-code design, far lower
+# wall-clock. Each group keeps the same per-call retry for reliability.
+_AUDIT_BASE = """You are a pandas expert computing part of a Steam profile audit.
 
 Pre-loaded (do NOT redefine, do NOT import): games, achievements, player_unlocks, pd, np, json.
-
 CRITICAL column meanings:
 - player_unlocks.achieved = whether THIS PLAYER unlocked the achievement.
 - achievements.rarity_pct = % of ALL players who unlocked it (float, may be NaN).
 - unlock_time = Unix seconds (use pd.to_datetime(x, unit='s') for dates).
+Only count games that HAVE achievements where a completion % is needed.
+"Started" = >=1 achievement unlocked. Output ONLY raw python (no markdown fences);
+assign the result via `result = json.dumps({...})` with EXACTLY the keys below."""
 
-Compute these and return them as ONE json (assign to `result`). Only count games that HAVE
-achievements where a completion % is needed. "Started" = >=1 achievement unlocked.
-
-result = json.dumps({
+_AUDIT_GROUPS: list[tuple[str, str, str]] = [   # (name, model, spec)
+    ("overview", DEEPSEEK_MODEL_FLASH, """{
   "total_unlocked":   <int achievements the player has unlocked>,
   "total_achievements": <int total achievements across games that have them>,
   "overall_pct":      <float total_unlocked / total_achievements * 100>,
   "games_total":      <int owned games>,
   "games_started":    <int games with >=1 unlock>,
-  "games_completed":  <int games at 100%>,
-  "rarest":   {"name": <display_name>, "rarity_pct": <float>, "game": <game name>},   # rarest UNLOCKED
-  "easy_wins":[{"name":..., "rarity_pct":..., "game":...}, ...],   # 5 LOCKED achievements, highest rarity
+  "games_completed":  <int games at 100%>
+}"""),
+    ("highlights", DEEPSEEK_MODEL_PRO, """{
+  "rarest":   {"name": <display_name>, "rarity_pct": <float>, "game": <game name>},  # rarest UNLOCKED
+  "easy_wins":[{"name":..., "rarity_pct":..., "game":...}, ...]   # 5 LOCKED achievements, highest rarity_pct
+}"""),
+    ("progress", DEEPSEEK_MODEL_PRO, """{
   "abandoned":[{"game":..., "pct": <float>, "remaining": <int>}, ...],  # started, <10% complete, up to 5
-  "momentum": {"last_unlock": <"YYYY-MM-DD" of most recent unlock>, "unlocks_last_30d": <int>},
   "focus":    {"game":..., "remaining": <int>, "pct": <float>},   # started, <100%, FEWEST remaining
+  "momentum": {"last_unlock": <"YYYY-MM-DD" of most recent unlock>, "unlocks_last_30d": <int>}
+}
+For momentum use the player's unlocked rows only; "last 30 days" = within 30 days of the latest unlock."""),
+    ("chart", DEEPSEEK_MODEL_FLASH, """{
   "completion_by_game":[{"game":..., "pct": <float>}, ...]   # top 10 games by completion %, for a chart
-})
-
-For momentum use the player's unlocked rows only; "last 30 days" = within 30 days of the latest unlock
-in the data. Output ONLY raw python, no markdown fences."""
+}"""),
+]
 
 _HOWTO_SYSTEM = """You are a Steam achievement guide assistant.
 Given the user's question and a few web search snippets, write a practical,
@@ -190,6 +220,20 @@ concise how-to answer: the concrete steps or tips to unlock the achievement.
 Base it on the snippets — if they're thin or conflicting, say what's known and
 don't invent specifics. Keep it under ~6 sentences, then end with a 'Sources:'
 list of the URLs you actually used."""
+
+_TIMECOST_NAME_SYSTEM = """You identify the single video-game title the user wants a
+time-to-complete estimate for. Use the conversation history to resolve indirect references
+("that one", "it", "how about it"). Reply with ONLY the game's name and nothing else — no quotes,
+no extra words. If no specific game can be determined, reply EXACTLY: NONE."""
+
+_TIMECOST_SYNTH_SYSTEM = """You extract the time to FULLY complete (100% / all achievements) a game
+from web snippets (often HowLongToBeat). Given the game name and a few snippets:
+- Use the hours figures in the snippets for the FULL base game's 100%/completionist/all-achievements
+  time. Prefer a 'Completionist' figure; otherwise use all-achievements/all-campaigns completion times.
+- IGNORE figures that are clearly for a DLC/episode only, or a record speedrun — they're not typical.
+- If several reasonable figures appear, give a representative RANGE (e.g. "around 9–17 hours").
+- Answer in ONE concise sentence with the hours. Only reply EXACTLY "NONE" if the snippets contain
+  NO time-to-complete figure at all. Never invent numbers not supported by the snippets."""
 
 _FINALIZE_SYSTEM = """You are a helpful assistant summarizing Steam achievement analysis results.
 Given the question and the computed result, write a clear, concise natural-language answer.
@@ -402,6 +446,8 @@ def plan_code_node(state: AgentState) -> AgentState:
                 route = "roadmap"
             elif "audit" in low:
                 route = "audit"
+            elif "timecost" in low:
+                route = "timecost"
             else:
                 route = "analysis"
         elif line.startswith("INTERPRETATION:"):
@@ -539,12 +585,143 @@ def howto_search_node(state: AgentState) -> AgentState:
     return {"answer": answer, "sources": results, "done": True}
 
 
+def _game_stats(appid, frames: dict[str, pd.DataFrame]) -> tuple[int, int, float]:
+    """(total achievements, unlocked by player, playtime hours) for one appid."""
+    ach, pu, g = frames["achievements"], frames["player_unlocks"], frames["games"]
+    total = int((ach["appid"] == appid).sum())
+    unlocked = int(((pu["appid"] == appid) & pu["achieved"]).sum())
+    row = g[g["appid"] == appid]
+    playtime = round(float(row.iloc[0]["playtime"]) / 60, 1) if not row.empty else 0.0
+    return total, unlocked, playtime
+
+
+def _match_owned_game(question: str, games_df: pd.DataFrame):
+    """Deterministically resolve an EXPLICITLY-named owned game from the question:
+    the longest owned game name that appears as a substring (case-insensitive).
+    Longest wins so 'Left 4 Dead 2' beats 'Left 4 Dead'. Returns (name, appid) or
+    None — None falls back to the LLM for typos / pronoun follow-ups."""
+    ql = (question or "").lower()
+    best = None
+    for name, appid in zip(games_df["name"].astype(str), games_df["appid"]):
+        if len(name) >= 3 and name.lower() in ql:
+            if best is None or len(name) > len(best[0]):
+                best = (name, appid)
+    return best
+
+
+def _fuzzy_owned(title: str, games_df: pd.DataFrame, threshold: float = 0.82):
+    """Best owned-game match for a short extracted TITLE — substring either way or a
+    high fuzzy ratio (catches typos like 'Left 4 Ded 2'). Returns (name, appid) or
+    None when nothing is close (→ the user means a game they don't own)."""
+    tl = (title or "").lower().strip()
+    if not tl:
+        return None
+    best_score, best = 0.0, None
+    for name, appid in zip(games_df["name"].astype(str), games_df["appid"]):
+        nl = name.lower()
+        score = difflib.SequenceMatcher(None, tl, nl).ratio()
+        if tl in nl or nl in tl:
+            score = max(score, 0.9)
+        if score > best_score:
+            best_score, best = score, (name, appid)
+    return best if best_score >= threshold else None
+
+
+def time_estimate_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
+    """Estimate time-to-100% a game: COMMUNITY average via a cached Tavily search,
+    grounded with the player's OWN pace from snapshot data. Terminal node (-> END).
+
+    Game resolution is Python-first (deterministic substring match on owned names);
+    a cheap LLM call only extracts the title for typos, pronoun follow-ups, or games
+    the player does NOT own. Owned stats come straight from the frames (no hallucination);
+    unowned games get the community average only (no playtime → no personal estimate)."""
+    target = None
+    owned = False
+    total = unlocked = 0
+    playtime = 0.0
+
+    matched = _match_owned_game(state["question"], frames["games"])
+    if matched:
+        owned, (target, appid) = True, matched
+        total, unlocked, playtime = _game_stats(appid, frames)
+    else:
+        # Extract the title (handles typos, follow-ups, and unowned games).
+        prompt = (
+            f"{_format_history(state)}"
+            f"Question: {state['question']}"
+        )
+        title = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_NAME_SYSTEM).strip()
+        if title and title.upper() != "NONE":
+            m2 = _fuzzy_owned(title, frames["games"])
+            if m2:  # a game they own (matched through a typo/partial name)
+                owned, (target, appid) = True, m2
+                total, unlocked, playtime = _game_stats(appid, frames)
+            else:   # a real game they don't own → community-only
+                target = title
+
+    if not target:
+        suggestions = _suggest_owned_games(state["question"], frames["games"])
+        hint = (f" Did you mean {', '.join(suggestions)}?" if suggestions else "")
+        return {
+            "answer": ("Tell me which game you'd like a time-to-complete estimate for, "
+                       "e.g. \"how long to 100% Hollow Knight?\"." + hint),
+            "route": "timecost", "done": True,
+        }
+
+    remaining = max(total - unlocked, 0)
+
+    # Personal pace (grounded) — owned games with enough signal to be honest.
+    personal = ""
+    if owned and total and unlocked >= total:
+        personal = f"You've already 100%-ed **{target}** 🎉 — nothing left to grind."
+    elif owned and playtime >= 1 and unlocked >= 3:
+        rate = unlocked / playtime  # achievements per hour, this player
+        if rate > 0:
+            personal = (f"At **your** pace ({unlocked}/{total} in {playtime:.0f}h ≈ {rate:.1f}/hr), "
+                        f"roughly **{remaining / rate:.0f}h** left for the remaining {remaining}.")
+
+    # Community average via CACHED Tavily (shared across users by game → bounded cost).
+    results = cached_search(
+        f"timecost:{target.lower()}",
+        f"howlongtobeat {target} completionist 100% all achievements hours",
+        max_results=5,
+    )
+    community = ""
+    if results:
+        context = "\n\n".join(f"[{i}] {r['title']}\n{r['url']}\n{r['content']}"
+                              for i, r in enumerate(results, 1))
+        synth = call_llm(f"Game: {target}\n\nWeb results:\n{context}",
+                         model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_SYNTH_SYSTEM).strip()
+        if synth and synth.upper() != "NONE":
+            community = synth
+
+    parts = [f"### ⏱️ Time to 100% {target}"]
+    if community:
+        parts.append(f"**Community average:** {community}")
+
+    if owned:
+        if personal:
+            parts.append(personal)
+        if not community and not personal:
+            parts.append(f"You're at {unlocked}/{total} ({remaining} left), but I couldn't find "
+                         "community completion-time data and don't have enough of your playtime to estimate.")
+    else:
+        if community:
+            parts.append(f"_You don't own **{target}** yet, so there's no personalized estimate — "
+                         "that's the community average._")
+        else:
+            parts.append(f"I couldn't find community completion-time data for **{target}**, "
+                         "and you don't own it so I can't estimate from your playtime.")
+
+    return {"answer": "\n\n".join(parts), "route": "timecost", "sources": results, "done": True}
+
+
 # ── Roadmap (flagship) ────────────────────────────────────────────────────────
 
 _TIER_QUICK_MIN    = 50.0   # rarity_pct >= 50 → quick win (most players have it)
 _TIER_MODERATE_MIN = 15.0   # 15–50 → moderate; < 15 (or unknown) → challenge/grind
 _ROADMAP_MAX_HOWTO = 2      # bound web lookups to the hardest few
-_ROADMAP_TIER_LIMIT = 10    # show at most N per tier
+_ROADMAP_TIER_LIMIT = 15    # show at most N per tier
 
 
 def _rarity(a: dict) -> Optional[float]:
@@ -556,40 +733,193 @@ def _rarity(a: dict) -> Optional[float]:
         return None
 
 
-def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
-    """Flagship: build a VERIFIED, tiered completion roadmap. The achievement data
-    comes from the sandbox (real, still-locked achievements with real rarity), so it
-    cannot be hallucinated. Ends with a refine invitation (human-in-the-loop)."""
-    prompt = (
-        f"Schema:\n{state['schema']}\n\n"
-        f"{_format_history(state)}"
-        f"Question: {state['question']}"
+_COMMON_WORDS = {"the", "a", "of", "and", "to", "ii", "iii", "iv", "edition",
+                 "definitive", "game", "games", "online", "hd", "remastered"}
+
+
+def _suggest_owned_games(target: str, games_df: pd.DataFrame, n: int = 3) -> list[str]:
+    """Find owned games with names similar to `target` (for "did you mean…?").
+    Uses word overlap (so 'Forza Horizon 6' → 'Forza Horizon 4') + fuzzy ratio."""
+    target_l = (target or "").lower()
+    target_words = {w for w in re.findall(r"[a-z0-9]+", target_l)
+                    if w not in _COMMON_WORDS and len(w) > 2}
+    scored = []
+    for name in games_df["name"].astype(str):
+        nl = name.lower()
+        shared = target_words & set(re.findall(r"[a-z0-9]+", nl))
+        ratio = difflib.SequenceMatcher(None, target_l, nl).ratio()
+        if shared or ratio > 0.5:
+            scored.append((len(shared) + ratio, name))
+    scored.sort(reverse=True)
+    out: list[str] = []
+    for _, name in scored:
+        if name not in out:
+            out.append(name)
+        if len(out) >= n:
+            break
+    return out
+
+
+def _fetch_schema_and_rarity(appid: int) -> Optional[dict]:
+    """Live-fetch a game's full achievement schema + global rarity (both endpoints
+    work for ANY appid). Returns {"achievements": [{name, rarity_pct, description,
+    hidden}]} or None if the game exposes no achievements."""
+    try:
+        schema = steam_client.get_schema_for_game(appid)
+        gpct = steam_client.get_global_achievement_pct(appid)
+    except Exception:
+        return None
+    ach_list = (
+        (schema.get("game", {}).get("availableGameStats", {}) or {}).get("achievements", [])
     )
-    raw = call_llm(prompt, model=DEEPSEEK_MODEL_PRO, system=_ROADMAP_CODE_SYSTEM)
-    code = _extract_code(raw)
-    result, error = run_user_code(code, frames, state.get("steam_id"))
-
-    data = None
-    if result and not error:
-        try:
-            data = json.loads(result)
-        except Exception:
-            data = None
-    if not data:
-        return {
-            "answer": ("I couldn't build a roadmap for that — try naming a specific game, "
-                       "e.g. \"build me a plan to 100% Rocket League\"."),
-            "code_history": [code],
-            "done": True,
+    if not ach_list:
+        return None
+    pct = {p.get("name"): p.get("percent")
+           for p in gpct.get("achievementpercentages", {}).get("achievements", [])}
+    return {"achievements": [
+        {
+            "name": a.get("displayName") or a.get("name"),
+            "rarity_pct": pct.get(a.get("name")),
+            "description": a.get("description", ""),
+            "hidden": bool(a.get("hidden", 0)),
         }
+        for a in ach_list
+    ]}
 
-    target   = data.get("target", "your library")
-    total    = data.get("total", 0)
-    unlocked = data.get("unlocked", 0)
-    remaining = data.get("remaining") or []
+
+def _unowned_roadmap_data(name: str) -> Optional[dict]:
+    """Build roadmap data for a game the player does NOT own. Resolves name->appid
+    via Steam store search, then live-fetches the schema + rarity — ALL achievements
+    count as locked (the player owns none). Cached + shared by game.
+
+    Sanctioned exception to the snapshot rule (like the time-estimate web search):
+    the snapshot only holds owned games, so an unowned roadmap MUST fetch live.
+    Returns {target, total, remaining} or None if unresolvable / no achievements.
+    Semantic refine filters ("skip multiplayer", "no DLC") are applied separately by
+    `_apply_unowned_filter` in the node, mirroring the owned path's code-gen filters."""
+    apps = cached_json(f"appsearch:{name.lower().strip()}", lambda: steam_client.search_app(name))
+    if not apps:
+        return None
+    appid = apps[0]["appid"]
+    resolved = apps[0].get("name") or name
+
+    payload = cached_json(f"schema:{appid}", lambda: _fetch_schema_and_rarity(appid))
+    achs = (payload or {}).get("achievements") or []
+    if not achs:
+        return None
+    # Easiest-first (highest global rarity %), NaN/unknown last — matches owned path.
+    achs.sort(key=lambda a: (_rarity(a) is None, -(_rarity(a) or 0)))
+    return {"target": resolved, "total": len(achs), "remaining": achs}
+
+
+def _apply_unowned_filter(question: str, achievements: list[dict]) -> list[dict]:
+    """Apply a SEMANTIC exclusion filter (e.g. "skip multiplayer", "no DLC") to a
+    fetched unowned-game achievement list via one Flash call — this gives unowned
+    roadmaps the same refine ability the owned (sandbox code-gen) path has. Returns
+    the list unchanged when there's no exclusion. Best-effort: any failure, an empty
+    parse, or an attempt to drop everything falls back to the full list."""
+    if not achievements:
+        return achievements
+    listing = "\n".join(
+        f"{i}. {a['name']}" + (f" — {a.get('description', '')}" if a.get("description") else "")
+        for i, a in enumerate(achievements, 1)
+    )
+    try:
+        resp = call_llm(f"Request: {question}\n\nAchievements:\n{listing}",
+                        model=DEEPSEEK_MODEL_FLASH, system=_ROADMAP_FILTER_SYSTEM).strip()
+    except Exception:
+        return achievements
+    if not resp or resp.upper() == "NONE":
+        return achievements
+    drop = {int(t) - 1 for t in re.findall(r"\d+", resp)}
+    drop = {i for i in drop if 0 <= i < len(achievements)}
+    if not drop or len(drop) >= len(achievements):
+        return achievements  # nothing matched, or it tried to drop everything → ignore
+    return [a for i, a in enumerate(achievements) if i not in drop]
+
+
+def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
+    """Flagship: build a VERIFIED, tiered completion roadmap. For OWNED games the
+    achievement data comes from the sandbox (real, still-locked achievements with
+    real rarity), so it cannot be hallucinated. For a game the player does NOT own,
+    it live-fetches the full schema/rarity (all locked). Ends with a refine invite."""
+    games_df = frames["games"]
+    q = state["question"]
+
+    # Decide ownership UP-FRONT. If the user named a specific game they do NOT own,
+    # the sandbox can't help (it only has owned games) — it would crash or fabricate
+    # data — so take the live-fetch path. Owned games, the whole library, and refine
+    # follow-ups all keep the proven sandbox path. The extra title-extraction call
+    # only fires when no owned game name appears verbatim in the question.
+    unowned_target = None
+    if not _match_owned_game(q, games_df):
+        title = call_llm(
+            f"{_format_history(state)}Question: {q}",
+            model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_NAME_SYSTEM,
+        ).strip()
+        if title and title.upper() != "NONE" and not _fuzzy_owned(title, games_df):
+            unowned_target = title
+
+    code = ""
+    unowned = False
+    if unowned_target:
+        fetched = _unowned_roadmap_data(unowned_target)
+        if not fetched:
+            suggestions = _suggest_owned_games(unowned_target, games_df)
+            hint = f" Did you mean one you own — {', '.join(suggestions)}?" if suggestions else ""
+            return {
+                "answer": (f"I couldn't find **{unowned_target}** with achievement data on "
+                           f"Steam.{hint}"),
+                "done": True,
+            }
+        unowned = True
+        target, total, unlocked = fetched["target"], fetched["total"], 0
+        # Honor semantic refine filters ("skip multiplayer", "no DLC") on unowned
+        # games too — the sandbox path gets this from code-gen; here it's a Flash pass.
+        remaining = _apply_unowned_filter(q, fetched["remaining"])
+    else:
+        prompt = (
+            f"Schema:\n{state['schema']}\n\n"
+            f"{_format_history(state)}"
+            f"Question: {q}"
+        )
+        raw = call_llm(prompt, model=DEEPSEEK_MODEL_PRO, system=_ROADMAP_CODE_SYSTEM)
+        code = _extract_code(raw)
+        result, error = run_user_code(code, frames, state.get("steam_id"))
+        data = None
+        if result and not error:
+            try:
+                data = json.loads(result)
+            except Exception:
+                data = None
+        if not data:
+            return {
+                "answer": ("I couldn't build a roadmap for that — try naming a specific game, "
+                           "e.g. \"build me a plan to 100% Rocket League\"."),
+                "code_history": [code],
+                "done": True,
+            }
+        target   = data.get("target", "your library")
+        total    = data.get("total", 0)
+        unlocked = data.get("unlocked", 0)
+        remaining = data.get("remaining") or []
 
     if not remaining:
-        if total and unlocked >= total:
+        if total == 0:
+            # Not owned AND not findable on Steam (or it has no achievements).
+            suggestions = _suggest_owned_games(target, frames["games"])
+            if suggestions:
+                answer = (
+                    f"I couldn't find **{target}** in your library or on Steam. "
+                    f"Did you mean one of these you own — {', '.join(suggestions)}? "
+                    "Ask me for a roadmap to one of those."
+                )
+            else:
+                answer = (
+                    f"I couldn't find a game called **{target}** with achievement data on "
+                    "Steam. Try the exact title, or a game you own."
+                )
+        elif unlocked >= total:
             answer = f"🎉 You've already unlocked every achievement for **{target}**!"
         else:
             answer = (
@@ -634,10 +964,20 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
         return "\n".join(lines)
 
     pct_done = (unlocked / total * 100) if total else 0
+    true_remaining = (total - unlocked) if total else len(remaining)
+    shown = len(remaining)
+    # Decorate the DISPLAYED title for unowned games (keep `target` clean for the
+    # how-to search above). Surfaces in both the markdown and the React card.
+    display_target = f"{target} (not in your library)" if unowned else target
     parts = [
-        f"## 🗺️ Roadmap — {target}",
-        f"**{unlocked}/{total} unlocked ({pct_done:.0f}%) · {len(remaining)} to go**",
+        f"## 🗺️ Roadmap — {display_target}",
+        f"**{unlocked}/{total} unlocked ({pct_done:.0f}%) · {true_remaining} to go**",
     ]
+    if shown < true_remaining:
+        parts.append(
+            f"_Showing the {shown} easiest of {true_remaining} remaining — "
+            "ask for more or a specific tier (e.g. \"show the hard ones\")._"
+        )
     if quick:
         parts.append(f"\n### 🟢 Quick wins ({len(quick)})\n{_fmt(quick)}")
     if moderate:
@@ -652,7 +992,24 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
         "or pick a different game._"
     )
 
-    return {"answer": "\n".join(parts), "code_history": [code], "done": True}
+    # Structured data for rich (React) rendering; markdown `answer` is the fallback.
+    roadmap_data = {
+        "target": display_target,
+        "total": total,
+        "unlocked": unlocked,
+        "pct_done": round(pct_done, 1),
+        "remaining": true_remaining,
+        "shown": shown,
+        "tiers": {
+            "quick": quick[:_ROADMAP_TIER_LIMIT],
+            "moderate": moderate[:_ROADMAP_TIER_LIMIT],
+            "challenge": challenge[:_ROADMAP_TIER_LIMIT],
+        },
+        "tier_counts": {"quick": len(quick), "moderate": len(moderate), "challenge": len(challenge)},
+        "howto": [{"name": n, "url": u} for n, u in howto_links],
+    }
+    return {"answer": "\n".join(parts), "roadmap": roadmap_data,
+            "code_history": [code] if code else [], "done": True}
 
 
 # ── Profile Audit (flagship) ──────────────────────────────────────────────────
@@ -684,42 +1041,59 @@ def _audit_chart(cbg: list, frames: dict, steam_id: Optional[str]) -> Optional[s
     return cp if (not err and Path(cp).exists()) else None
 
 
-def audit_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
-    """Flagship: autonomous profile audit. One Pro call computes a battery of
-    grounded metrics (sandbox JSON), then we synthesize a structured, charted
-    report — multi-step analysis orchestrated behind a single request."""
-    # The audit query is complex (6 sections), so retry once with error feedback
-    # if the generated code crashes or returns invalid JSON.
-    data, code, err_ctx = None, "", ""
+def _audit_group(state: AgentState, frames: dict[str, pd.DataFrame], model: str, spec: str) -> tuple[dict, str]:
+    """Generate + run ONE audit metric-group (the agent still writes the code).
+    `model` is per-group: simple groups use FLASH (faster+cheaper), complex ones PRO.
+    Keeps a 2-try retry on a crash / invalid JSON. Returns (partial_data, code);
+    partial_data is {} on failure so the rest of the audit degrades gracefully."""
+    system = f"{_AUDIT_BASE}\n\nReturn EXACTLY these keys:\n{spec}"
+    code, err_ctx = "", ""
     for _ in range(2):
-        prompt = (
-            f"Schema:\n{state['schema']}\n\n"
-            f"{err_ctx}"
-            f"Question: {state['question']}"
-        )
-        raw = call_llm(prompt, model=DEEPSEEK_MODEL_PRO, system=_AUDIT_CODE_SYSTEM)
+        prompt = f"Schema:\n{state['schema']}\n\n{err_ctx}Compute the requested audit metrics."
+        raw = call_llm(prompt, model=model, system=system)
         code = _extract_code(raw)
         result, error = run_user_code(code, frames, state.get("steam_id"))
         if error:
             err_ctx = f"Your previous code FAILED — fix it:\n{error}\n\n"
             continue
         try:
-            data = json.loads(result)
-            break
+            return json.loads(result), code
         except Exception as exc:
             err_ctx = f"Your previous result was not valid JSON ({exc}). Return json.dumps(...).\n\n"
+    return {}, code
+
+
+def audit_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
+    """Flagship: autonomous profile audit. The agent writes the analysis code, but
+    the battery is split into INDEPENDENT metric groups generated + run CONCURRENTLY
+    (instead of one ~60s+ mega-call), then synthesized into a structured, charted
+    report — multi-step analysis orchestrated behind a single request."""
+    # Generate every group in parallel; each keeps its own retry. Threads give real
+    # parallelism here because both the LLM HTTP call and the sandbox subprocess
+    # release the GIL while they wait.
+    with ThreadPoolExecutor(max_workers=len(_AUDIT_GROUPS)) as ex:
+        results = list(ex.map(
+            lambda g: _audit_group(state, frames, g[1], g[2]), _AUDIT_GROUPS
+        ))
+
+    data: dict = {}
+    codes: list[str] = []
+    for partial, code in results:
+        data.update(partial)
+        if code:
+            codes.append(code)
 
     if not data:
         return {
             "answer": "I couldn't build an audit right now — please try again.",
-            "code_history": [code],
+            "code_history": codes,
             "done": True,
         }
 
     # Short LLM narrative intro (today's date injected so 2026 dates aren't flagged).
     try:
         intro = call_llm(
-            f"Today is {date.today().isoformat()}.\nProfile summary JSON:\n{result[:1500]}",
+            f"Today is {date.today().isoformat()}.\nProfile summary JSON:\n{json.dumps(data)[:1500]}",
             model=DEEPSEEK_MODEL_FLASH, system=_AUDIT_NARRATIVE_SYSTEM,
         ).strip()
     except Exception:
@@ -775,7 +1149,11 @@ def audit_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState
         )
         parts.append(f"\n_Want a roadmap for {focus['game']}? Just ask._")
 
-    return {"answer": "\n".join(parts), "chart_path": chart_path, "code_history": [code], "done": True}
+    # Structured data + intro for rich (React) rendering; markdown `answer` is the fallback.
+    audit_data = dict(data)
+    audit_data["intro"] = intro
+    return {"answer": "\n".join(parts), "audit": audit_data,
+            "chart_path": chart_path, "code_history": codes, "done": True}
 
 
 def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
@@ -840,7 +1218,7 @@ def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSt
 
 def route_after_plan_code(
     state: AgentState,
-) -> Literal["execute_code", "howto_search", "clarify", "chitchat", "roadmap", "audit"]:
+) -> Literal["execute_code", "howto_search", "clarify", "chitchat", "roadmap", "audit", "time_estimate"]:
     route = state.get("route")
     if route == "howto":
         return "howto_search"
@@ -852,6 +1230,8 @@ def route_after_plan_code(
         return "roadmap"
     if route == "audit":
         return "audit"
+    if route == "timecost":
+        return "time_estimate"
     return "execute_code"
 
 
@@ -885,6 +1265,7 @@ def build_graph(frames: dict[str, pd.DataFrame]):
     g.add_node("execute_code",   lambda s: execute_code_node(s, frames))
     g.add_node("validate_output", validate_output_node)
     g.add_node("howto_search",   howto_search_node)
+    g.add_node("time_estimate",  lambda s: time_estimate_node(s, frames))
     g.add_node("finalize",       lambda s: finalize_node(s, frames))
 
     g.add_edge(START, "inspect_schema")
@@ -900,4 +1281,5 @@ def build_graph(frames: dict[str, pd.DataFrame]):
     g.add_edge("roadmap", END)        # roadmap yields the full plan itself
     g.add_edge("audit", END)          # audit yields the full report itself
     g.add_edge("howto_search", END)   # how-to node yields the final answer itself
+    g.add_edge("time_estimate", END)  # time-estimate node yields the final answer itself
     return g.compile()

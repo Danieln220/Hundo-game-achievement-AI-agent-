@@ -2,11 +2,12 @@ import type { AskResult, SessionResult, Turn } from "./types";
 
 const BASE = (import.meta.env.VITE_API_URL as string) || "http://localhost:8000";
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(BASE + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     let detail = `Request failed (${res.status})`;
@@ -27,8 +28,56 @@ export const session = (profile: string) =>
 export const ask = (question: string, steam_id: string, history: Turn[]) =>
   post<AskResult>("/ask", { question, steam_id, history, with_insight: true });
 
-export const chart = (result: AskResult) =>
-  post<{ chart_url: string | null }>("/chart", { result });
+export const chart = (result: AskResult, signal?: AbortSignal) =>
+  post<{ chart_url: string | null }>("/chart", { result }, signal);
+
+// Streaming ask: reads the SSE stream from a POST (EventSource is GET-only, so we
+// parse the text/event-stream manually). Calls onProgress(node) as nodes fire,
+// returns the final AskResult. Pass an AbortSignal to cancel (the client stops
+// reading; the agent still finishes server-side — true server cancel is future work).
+export async function askStream(
+  question: string,
+  steam_id: string,
+  history: Turn[],
+  onProgress: (node: string) => void,
+  signal?: AbortSignal
+): Promise<AskResult> {
+  const res = await fetch(BASE + "/ask/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, steam_id, history, with_insight: true }),
+    signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`Stream failed (${res.status})`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: AskResult = {};
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE frames are separated by a blank line.
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      let event = "message";
+      let data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) continue;
+      const parsed = JSON.parse(data);
+      if (event === "progress") onProgress(parsed.node);
+      else if (event === "result") result = parsed;
+    }
+  }
+  return result;
+}
 
 // Prefix a relative chart_url (e.g. /charts/x.png) with the API origin for <img>.
 export const assetUrl = (url: string) => BASE + url;

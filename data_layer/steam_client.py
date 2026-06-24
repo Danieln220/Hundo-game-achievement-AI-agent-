@@ -102,6 +102,24 @@ def get_player_achievements(steam_id: str, appid: int) -> dict:
     return data
 
 
+def search_app(term: str) -> list[dict]:
+    """Steam storefront search — resolve a game NAME to ranked [{appid, name}].
+    Official store endpoint; works for ANY game (owned or not). Used to build a
+    roadmap for a game the player doesn't own. Returns [] on failure."""
+    try:
+        resp = requests.get(
+            "https://store.steampowered.com/api/storesearch/",
+            params={"term": term, "cc": "us", "l": "en"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+    except Exception:
+        return []
+    return [{"appid": it.get("id"), "name": it.get("name", "")}
+            for it in items if it.get("id")]
+
+
 def get_global_achievement_pct(appid: int) -> dict:
     """ISteamUserStats/GetGlobalAchievementPercentagesForApp — rarity %."""
     resp = requests.get(
