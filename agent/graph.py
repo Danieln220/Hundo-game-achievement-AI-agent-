@@ -388,6 +388,9 @@ def generate_chart(state: AgentState, frames: dict[str, pd.DataFrame]) -> Option
 
     _, error = run_user_code(code, frames, state.get("steam_id"))
     if error or not Path(chart_path).exists():
+        # Surface WHY (timeout vs crash vs no-file) — otherwise chart failures are
+        # invisible in prod. Cheap log, no behavior change.
+        print(f"[chart] generation failed: {error or 'chart file not written'}")
         return None
     return chart_path
 

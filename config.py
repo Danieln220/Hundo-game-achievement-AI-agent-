@@ -28,7 +28,10 @@ DEEPSEEK_MODEL_FLASH = os.environ.get("DEEPSEEK_MODEL_FLASH", "deepseek-v4-flash
 CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 
 MAX_RETRIES = 3            # bound the self-correction loop (total code attempts)
-EXEC_TIMEOUT_SECONDS = 10  # hard timeout for sandboxed code
+# Hard timeout for sandboxed code. Env-overridable: on a throttled host (e.g.
+# Render free tier = 0.1 CPU) matplotlib chart rendering can exceed 10s — bump
+# EXEC_TIMEOUT_SECONDS there so charts/audit don't silently time out.
+EXEC_TIMEOUT_SECONDS = int(os.environ.get("EXEC_TIMEOUT_SECONDS", "10"))
 # Virtual-address-space (RLIMIT_AS) cap for sandboxed code (POSIX only; no-op on
 # Windows). This is VIRTUAL memory, not RSS — pandas/numpy/matplotlib reserve large
 # virtual arenas they never physically use, so a too-low value spuriously
