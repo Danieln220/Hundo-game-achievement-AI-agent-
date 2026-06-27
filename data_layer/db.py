@@ -141,3 +141,37 @@ def log_query(steam_id: str | None, question: str, route: str | None,
         "route": route,
         "latency_ms": latency_ms,
     })
+
+
+def stale_snapshots(cutoff_iso: str) -> list[str]:
+    """SteamIDs whose snapshot was built before `cutoff_iso` (for cache GC).
+    Best-effort — returns [] on error or when the DB is off."""
+    if not using_db():
+        return []
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/snapshot",
+            params={"select": "steam_id", "built_at": f"lt.{cutoff_iso}"},
+            headers=_headers(),
+            timeout=_TIMEOUT,
+        )
+        r.raise_for_status()
+        return [row["steam_id"] for row in r.json() if row.get("steam_id")]
+    except (requests.RequestException, ValueError, KeyError):
+        return []
+
+
+def delete_snapshot(steam_id: str) -> None:
+    """Delete a snapshot METADATA row (the blob is removed separately). Identity
+    (steam_user) + usage (query_log) are kept. Best-effort."""
+    if not using_db():
+        return
+    try:
+        requests.delete(
+            f"{SUPABASE_URL}/rest/v1/snapshot",
+            params={"steam_id": f"eq.{steam_id}"},
+            headers=_headers("return=minimal"),
+            timeout=_TIMEOUT,
+        )
+    except requests.RequestException:
+        pass

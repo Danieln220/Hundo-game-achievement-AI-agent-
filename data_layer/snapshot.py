@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import SNAPSHOT_DIR, STEAM_ID, SNAPSHOT_LOCK_TTL
+from config import SNAPSHOT_DIR, STEAM_ID, SNAPSHOT_LOCK_TTL, SNAPSHOT_WAIT_MAX
 from . import steam_client
 from . import storage
 from . import cache
@@ -216,25 +216,33 @@ def _build_with_lock(steam_id: str, progress_cb=None) -> None:
     worker holds the lock, wait for it to finish and reuse its result; only build
     ourselves if that build vanished (lock expired / failed)."""
     lock_key = f"lock:snap:{steam_id}"
-    if cache.acquire_lock(lock_key, ttl_seconds=SNAPSHOT_LOCK_TTL):
+
+    def _build_holding_lock() -> None:
+        # Heartbeat the (short-TTL) lock on every progress tick so a LIVE build
+        # keeps it, but a build that dies mid-flight lets it expire within
+        # SNAPSHOT_LOCK_TTL — so a waiter/new request can take over quickly.
+        def hb(done: int, total: int) -> None:
+            cache.refresh_lock(lock_key, SNAPSHOT_LOCK_TTL)
+            if progress_cb:
+                progress_cb(done, total)
         try:
-            build_snapshot(steam_id, progress_cb=progress_cb)
+            build_snapshot(steam_id, progress_cb=hb)
         finally:
             cache.release_lock(lock_key)
+
+    if cache.acquire_lock(lock_key, ttl_seconds=SNAPSHOT_LOCK_TTL):
+        _build_holding_lock()
         return
 
-    # Someone else is building — poll until their lock clears (build fully written
-    # + uploaded), then reuse it. has_snapshot alone isn't enough: owned_games.json
-    # is written early, mid-build, so we wait on the LOCK, not the marker file.
+    # Someone else is building — wait until their (heartbeated) lock clears, then
+    # reuse it. has_snapshot alone isn't enough mid-build, so we wait on the LOCK.
+    # If the holder dies, its lock expires (no heartbeat) and we take over.
     waited = 0
-    while waited < SNAPSHOT_LOCK_TTL and cache.exists(lock_key):
+    while waited < SNAPSHOT_WAIT_MAX and cache.exists(lock_key):
         time.sleep(2)
         waited += 2
     if not has_snapshot(steam_id) and cache.acquire_lock(lock_key, ttl_seconds=SNAPSHOT_LOCK_TTL):
-        try:
-            build_snapshot(steam_id, progress_cb=progress_cb)
-        finally:
-            cache.release_lock(lock_key)
+        _build_holding_lock()
 
 
 def ensure_snapshot(

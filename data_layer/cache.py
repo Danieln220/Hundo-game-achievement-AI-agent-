@@ -154,5 +154,12 @@ def acquire_lock(key: str, ttl_seconds: int) -> bool:
         return True
 
 
+def refresh_lock(key: str, ttl_seconds: int) -> None:
+    """Extend a held lock's TTL (heartbeat). Plain SET EX overwrites the existing
+    value + resets expiry — used so a live build keeps its lock fresh while a dead
+    build's lock is allowed to expire (Step 15.6)."""
+    set(key, "1", ttl_seconds)
+
+
 def release_lock(key: str) -> None:
     delete(key)

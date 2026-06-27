@@ -75,9 +75,21 @@ RATE_LIMIT_ASK_PER_MIN = int(os.environ.get("RATE_LIMIT_ASK_PER_MIN", "15"))
 RATE_LIMIT_ASK_PER_DAY = int(os.environ.get("RATE_LIMIT_ASK_PER_DAY", "150"))
 RATE_LIMIT_SESSION_PER_MIN = int(os.environ.get("RATE_LIMIT_SESSION_PER_MIN", "10"))
 
-# How long the snapshot build-lock is held (seconds). Generous: a huge library
-# (e.g. 1000 games ≈ 3000 Steam calls) can take a few minutes to build.
-SNAPSHOT_LOCK_TTL = int(os.environ.get("SNAPSHOT_LOCK_TTL", "600"))
+# Snapshot build-lock TTL (seconds). SHORT + heartbeat (Step 15.6): the builder
+# refreshes the lock every progress tick, so a live build keeps it; a DEAD build
+# (killed/redeployed mid-flight) lets it expire within this window so a new build
+# can take over — instead of a waiter sitting at 0/0 for the old 600s.
+SNAPSHOT_LOCK_TTL = int(os.environ.get("SNAPSHOT_LOCK_TTL", "90"))
+# Max time a concurrent caller waits for another worker's in-flight build before
+# giving up and rebuilding itself (safety cap; normally exits as soon as the lock
+# clears). Longer than any real build.
+SNAPSHOT_WAIT_MAX = int(os.environ.get("SNAPSHOT_WAIT_MAX", "900"))
+
+# Snapshot cache GC (Step 15.6): per-user snapshots not rebuilt in this many days
+# are swept (blobs + DB row + local cache); they regenerate on the user's next
+# visit. Identity (steam_user) + usage (query_log) are kept. Needs the DB (uses
+# snapshot.built_at), so cleanup is skipped when USE_DB is false.
+SNAPSHOT_TTL_DAYS = float(os.environ.get("SNAPSHOT_TTL_DAYS", "30"))
 
 
 def missing_secrets() -> list[str]:
@@ -90,6 +102,8 @@ def missing_secrets() -> list[str]:
         missing.append("STEAM_API_KEY")
     if not LLM_API_KEY:
         missing.append("LLM_API_KEY")
+    if not TAVILY_API_KEY:
+        missing.append("TAVILY_API_KEY")  # how-to + time-to-complete degrade badly without it
     return missing
 
 

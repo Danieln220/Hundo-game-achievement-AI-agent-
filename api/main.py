@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from config import (
     CORS_ORIGINS, CHART_TTL_HOURS, CHART_MAX_FILES, missing_secrets,
     RATE_LIMIT_ASK_PER_MIN, RATE_LIMIT_ASK_PER_DAY, RATE_LIMIT_SESSION_PER_MIN,
+    SNAPSHOT_TTL_DAYS,
 )
 from agent import run, run_stream, make_chart
 from data_layer import steam_client
@@ -29,12 +30,34 @@ from data_layer import db
 
 import time
 from data_layer.resolver import resolve_steam_id, SteamResolveError
-from data_layer.snapshot import ensure_snapshot, has_snapshot, load_frames, PrivateProfileError
+from data_layer.snapshot import (
+    ensure_snapshot, has_snapshot, load_frames, clear_snapshot, PrivateProfileError,
+)
 
 import threading
 
 _CHARTS_DIR = Path(__file__).parent.parent / "data" / "charts"
 _CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _sweep_snapshots() -> int:
+    """GC per-user snapshots not rebuilt in SNAPSHOT_TTL_DAYS (blob + DB row +
+    local cache); they regenerate on the user's next visit. Identity + usage logs
+    are kept. Needs the DB (uses snapshot.built_at), so it's a no-op without it.
+    Best-effort — never raises into a request. Returns the number swept."""
+    if not db.using_db():
+        return 0
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=SNAPSHOT_TTL_DAYS)).isoformat()
+    swept = 0
+    for sid in db.stale_snapshots(cutoff):
+        try:
+            clear_snapshot(sid)       # blob (object storage) + local cache
+            db.delete_snapshot(sid)   # metadata row
+            swept += 1
+        except Exception:
+            pass
+    return swept
 
 
 def _sweep_charts() -> int:
@@ -243,7 +266,8 @@ def session(req: SessionReq):
     """Resolve a profile and return its summary if the snapshot is ready; otherwise
     start the build in the background and return {status:"building"}. The client
     then polls /session/status. Resolution stays synchronous (one fast Steam call)."""
-    _sweep_charts()  # opportunistic cleanup so long-running servers stay bounded
+    _sweep_charts()      # opportunistic cleanup so long-running servers stay bounded
+    _sweep_snapshots()   # GC snapshots not rebuilt in SNAPSHOT_TTL_DAYS (DB-driven)
     try:
         steam_id = resolve_steam_id(req.profile)
     except SteamResolveError as e:
@@ -346,6 +370,18 @@ def _warmup():
     except Exception:
         pass
 
+
+# Startup secret validation — fail loudly in the logs if required secrets are
+# missing, instead of surfacing a cryptic 403/502 deep inside a request later.
+_missing = missing_secrets()
+if _missing:
+    print(f"[startup] WARNING: missing required secrets: {', '.join(_missing)} — "
+          "related features will fail until set.")
+else:
+    print("[startup] all required secrets present.")
+print(f"[startup] storage={'supabase' if storage.using_supabase() else 'local'} "
+      f"| redis={'upstash' if cache.using_redis() else 'in-memory'} "
+      f"| db={'on' if db.using_db() else 'off'}")
 
 threading.Thread(target=_warmup, daemon=True).start()
 
