@@ -1,18 +1,8 @@
-import { useState, useEffect } from "react";
-import { session } from "../api";
+import { useState, useRef, useEffect } from "react";
+import { session, sessionStatus } from "../api";
 import type { SessionResult } from "../types";
 
-// Staged labels shown during the (synchronous) snapshot build. These are
-// time-driven, NOT real progress — /session blocks until done and exposes no
-// percentage. A true progress bar needs the async snapshot build deferred to
-// Step 15; until then this is an honest "here's roughly what's happening" cycle.
-const STAGES = [
-  "Resolving your profile…",
-  "Fetching your library…",
-  "Building your trophy case…",
-  "Crunching achievement rarity…",
-  "Almost there…",
-];
+const POLL_MS = 1500; // how often to poll /session/status while a snapshot builds
 
 export default function ProfileGate({
   onLoaded,
@@ -22,32 +12,50 @@ export default function ProfileGate({
   const [value, setValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [stage, setStage] = useState(0);
+  // Real build progress (done/total/pct) from the server; null until the first
+  // progress tick (or for the fast cached path, which never shows a bar).
+  const [progress, setProgress] = useState<{ done: number; total: number; pct: number } | null>(null);
 
-  // Advance the stage label every ~6s while loading (caps at the last stage).
-  useEffect(() => {
-    if (!loading) {
-      setStage(0);
-      return;
-    }
-    const id = setInterval(
-      () => setStage((s) => Math.min(s + 1, STAGES.length - 1)),
-      6000
-    );
-    return () => clearInterval(id);
-  }, [loading]);
+  // Stop polling if the component unmounts mid-build.
+  const cancelled = useRef(false);
+  useEffect(() => () => { cancelled.current = true; }, []);
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   async function load() {
     if (!value.trim() || loading) return;
+    cancelled.current = false;
     setLoading(true);
     setError(null);
+    setProgress(null);
     try {
       const r = await session(value.trim());
-      onLoaded(r);
+      if (r.status === "ready") {
+        onLoaded(r); // cached snapshot — straight in
+        return;
+      }
+      // Building in the background — poll for live progress until ready/failed.
+      for (;;) {
+        if (cancelled.current) return;
+        await sleep(POLL_MS);
+        const st = await sessionStatus(r.steam_id);
+        if (cancelled.current) return;
+        if (st.status === "ready") {
+          onLoaded(st);
+          return;
+        }
+        if (st.status === "failed") {
+          setError(st.error);
+          setLoading(false);
+          setProgress(null);
+          return;
+        }
+        setProgress(st.progress);
+      }
     } catch (e) {
       setError((e as Error).message);
-    } finally {
       setLoading(false);
+      setProgress(null);
     }
   }
 
@@ -76,10 +84,26 @@ export default function ProfileGate({
 
       {loading && (
         <div className="gate-progress">
-          <div className="indeterminate-bar">
-            <div className="indeterminate-fill" />
-          </div>
-          <p className="muted small">{STAGES[stage]} <span className="muted">(first time only, ~15–30s)</span></p>
+          {progress && progress.total > 0 ? (
+            <>
+              <div className="progress-bar">
+                <div style={{ width: `${progress.pct}%` }} />
+              </div>
+              <p className="muted small">
+                Building your trophy case… {progress.pct}%{" "}
+                <span className="muted">({progress.done}/{progress.total} fetched)</span>
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="indeterminate-bar">
+                <div className="indeterminate-fill" />
+              </div>
+              <p className="muted small">
+                Fetching your library… <span className="muted">(first time only)</span>
+              </p>
+            </>
+          )}
         </div>
       )}
       {error && <p className="error">{error}</p>}

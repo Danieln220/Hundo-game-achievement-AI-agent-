@@ -30,7 +30,10 @@ _FETCH_WORKERS = 16
 # The four files that make up one user's snapshot. data/snapshot/<id>/ is the
 # local cache; in Supabase mode it also mirrors to the "snapshots" bucket under
 # the same <id>/<file> key. The local dir is just a regenerable cache then.
-_SNAP_FILES = ("owned_games.json", "schemas.json", "achievements.json", "global_pct.json")
+# owned_games.json is LAST — it's the readiness marker (has_snapshot checks it),
+# so it must be written/uploaded only after the per-game files exist (no
+# half-built snapshot ever looks "ready" to a concurrent reader).
+_SNAP_FILES = ("schemas.json", "achievements.json", "global_pct.json", "owned_games.json")
 
 
 def _snap_key(steam_id: str, fname: str) -> str:
@@ -166,7 +169,6 @@ def build_snapshot(steam_id: str = STEAM_ID, progress_cb=None) -> None:
             "Steam → Profile → Privacy Settings, then try again."
         )
 
-    (out / "owned_games.json").write_text(json.dumps(owned, indent=2))
     print(f"Found {len(games)} games. Fetching per-game data ({_FETCH_WORKERS} workers)...")
 
     # Flatten every (game, endpoint) into an independent unit so all calls — not
@@ -195,6 +197,11 @@ def build_snapshot(steam_id: str = STEAM_ID, progress_cb=None) -> None:
     (out / "schemas.json").write_text(json.dumps(schemas, indent=2))
     (out / "achievements.json").write_text(json.dumps(achievements, indent=2))
     (out / "global_pct.json").write_text(json.dumps(global_pct, indent=2))
+    # owned_games.json is written LAST and is the readiness marker (has_snapshot
+    # checks it). Writing it only after the per-game files exist prevents a
+    # concurrent reader (e.g. /session/status polling) from seeing a half-built
+    # snapshot as "ready".
+    (out / "owned_games.json").write_text(json.dumps(owned, indent=2))
 
     if storage.using_supabase():
         _upload_snapshot(steam_id)

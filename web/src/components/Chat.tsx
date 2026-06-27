@@ -33,15 +33,26 @@ export default function Chat({
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // A follow-up typed while the agent is busy is queued here and auto-sent when
+  // the current answer finishes (one request at a time).
+  const pendingRef = useRef<string | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, busy, progress]);
 
-  // Refocus the composer once a request settles, so you can keep typing without
-  // clicking back into the box after every send.
+  // When a request settles: flush any queued follow-up, else refocus the composer
+  // so you can keep typing without clicking back into the box.
   useEffect(() => {
-    if (!busy) inputRef.current?.focus();
+    if (busy) return;
+    if (pendingRef.current) {
+      const q = pendingRef.current;
+      pendingRef.current = null;
+      send(q);
+    } else {
+      inputRef.current?.focus();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
 
   // Auto-grow the textarea up to a cap as the question spans multiple lines.
@@ -69,7 +80,13 @@ export default function Chat({
   }
 
   async function send(q: string) {
-    if (!q.trim() || busy) return;
+    if (!q.trim()) return;
+    if (busy) {
+      // Queue the follow-up; the busy effect sends it once the current finishes.
+      pendingRef.current = q;
+      setInput("");
+      return;
+    }
     const history = buildHistory(messages);
     const assistantIndex = messages.length + 1; // user pushed, then assistant
     const controller = new AbortController();
@@ -196,9 +213,12 @@ export default function Chat({
               send(input);
             }
           }}
-          placeholder="Ask about your achievements…  (Shift+Enter for a new line)"
+          placeholder={
+            busy
+              ? "Type your next question — it'll send when the current one finishes…"
+              : "Ask about your achievements…  (Shift+Enter for a new line)"
+          }
           rows={1}
-          disabled={busy}
         />
         {busy ? (
           <button className="stop-btn" onClick={stop}>

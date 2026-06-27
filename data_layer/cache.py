@@ -111,6 +111,33 @@ def delete(key: str) -> None:
         _mem.pop(key, None)
 
 
+def set(key: str, value: str, ttl_seconds: int | None = None) -> None:
+    """Store a string value (optionally with a TTL). Used for async-build status
+    + progress (Step 15.4). Best-effort — never raises into a request."""
+    if using_redis():
+        try:
+            if ttl_seconds:
+                _command("SET", key, value, "EX", ttl_seconds)
+            else:
+                _command("SET", key, value)
+        except Exception:
+            pass
+        return
+    with _mem_lock:
+        _mem[key] = [value, (time.time() + ttl_seconds) if ttl_seconds else None]
+
+
+def get(key: str) -> str | None:
+    if using_redis():
+        try:
+            return _command("GET", key)
+        except Exception:
+            return None
+    with _mem_lock:
+        entry = _mem.get(key)
+        return entry[0] if _mem_alive(entry) else None
+
+
 def acquire_lock(key: str, ttl_seconds: int) -> bool:
     """Best-effort distributed lock via SET NX EX. Returns True if acquired.
     Fail-open: grants the lock if Redis errored (better a rare double-build than a

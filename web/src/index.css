@@ -68,6 +68,8 @@ h1, h2, h3, .display { font-family: "Chakra Petch", system-ui, sans-serif; lette
   border-bottom: 1px solid var(--edge);
 }
 .brand { display: flex; align-items: center; gap: 13px; }
+.brand.clickable { cursor: pointer; border-radius: 10px; transition: opacity 0.15s; }
+.brand.clickable:hover { opacity: 0.82; }
 .logo {
   font-size: 22px;
   width: 42px; height: 42px;
@@ -208,6 +210,17 @@ button:disabled { opacity: 0.4; cursor: default; }
   border: 1px solid rgba(232,179,57,0.18);
   border-radius: 9px; font-size: 14px;
 }
+
+/* ── Numbered sources (how-to / time answers) ────────────────────────────────*/
+.sources { margin-top: 14px; border-top: 1px solid var(--edge); padding-top: 10px; }
+.sources-head {
+  font-family: "Chakra Petch", sans-serif; font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.7px; color: var(--ink-dim);
+  margin-bottom: 6px;
+}
+.sources ol { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 4px; }
+.sources li { font-size: 13.5px; }
+.sources a { color: var(--gold); word-break: break-word; }
 .chart {
   display: block; margin-top: 14px; max-width: 100%;
   border-radius: 9px; border: 1px solid var(--edge);

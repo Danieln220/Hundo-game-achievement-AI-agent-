@@ -70,6 +70,17 @@ export interface SessionResult {
   perfect: number;
 }
 
+// /session returns either a ready summary or a "building" handle to poll.
+export type SessionResponse =
+  | ({ status: "ready" } & SessionResult)
+  | { status: "building"; steam_id: string };
+
+// /session/status — polled while a snapshot builds in the background.
+export type SessionStatus =
+  | ({ status: "ready" } & SessionResult)
+  | { status: "building"; progress: { done: number; total: number; pct: number } }
+  | { status: "failed"; error: string };
+
 export interface Turn {
   question: string;
   answer: string;

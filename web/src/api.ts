@@ -1,4 +1,9 @@
-import type { AskResult, SessionResult, Turn } from "./types";
+import type {
+  AskResult,
+  SessionResponse,
+  SessionStatus,
+  Turn,
+} from "./types";
 
 // Strip any trailing slash so `BASE + "/session"` never becomes "…//session"
 // (a double slash 404s on FastAPI).
@@ -24,8 +29,28 @@ async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promi
   return res.json() as Promise<T>;
 }
 
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(BASE + path);
+  if (!res.ok) {
+    let detail = `Request failed (${res.status})`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detail = j.detail;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(detail);
+  }
+  return res.json() as Promise<T>;
+}
+
+// Returns a ready summary immediately if the snapshot exists, else {status:"building"}.
 export const session = (profile: string) =>
-  post<SessionResult>("/session", { profile });
+  post<SessionResponse>("/session", { profile });
+
+// Poll while a snapshot builds (Step 15.4): building (+progress) | ready (+summary) | failed.
+export const sessionStatus = (steamId: string) =>
+  get<SessionStatus>(`/session/status?steam_id=${encodeURIComponent(steamId)}`);
 
 export const ask = (question: string, steam_id: string, history: Turn[]) =>
   post<AskResult>("/ask", { question, steam_id, history, with_insight: true });

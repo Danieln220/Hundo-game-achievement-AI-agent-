@@ -28,6 +28,13 @@ const mdComponents: Components = {
   ),
 };
 
+// The how-to/time answers end with a free-form "Sources:" list the model writes
+// (often raw, unnumbered URLs). When we have structured sources, drop that
+// trailing block and render a clean numbered list instead.
+function stripTrailingSources(md: string): string {
+  return md.replace(/\n+\s*\**#{0,6}\s*sources\b\**\s*:?[\s\S]*$/i, "").trimEnd();
+}
+
 export default function Message(props: Props) {
   if (props.role === "user") {
     return (
@@ -40,8 +47,12 @@ export default function Message(props: Props) {
   const { result, chartUrl, chartLoading, onAction, retryQuestion, onRetry } = props;
   const hasTrace =
     !!result.plan || (result.code_history?.length ?? 0) > 0;
+  const hasSources = (result.sources?.length ?? 0) > 0;
 
   // Route-specific rich rendering; markdown is the fallback for everything else.
+  const answerText = hasSources
+    ? stripTrailingSources(result.answer || "")
+    : result.answer || "(no answer)";
   const body = result.roadmap ? (
     <RoadmapCard data={result.roadmap} onAction={onAction} />
   ) : result.audit ? (
@@ -49,7 +60,7 @@ export default function Message(props: Props) {
   ) : (
     <div className="markdown">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-        {result.answer || "(no answer)"}
+        {answerText || "(no answer)"}
       </ReactMarkdown>
     </div>
   );
@@ -66,6 +77,21 @@ export default function Message(props: Props) {
         )}
 
         {result.insight && <div className="insight">💡 {result.insight}</div>}
+
+        {hasSources && (
+          <div className="sources">
+            <div className="sources-head">Sources</div>
+            <ol>
+              {result.sources!.map((s, i) => (
+                <li key={i}>
+                  <a href={s.url} target="_blank" rel="noreferrer">
+                    {s.title || s.url}
+                  </a>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
 
         {chartLoading && (
           <div className="chart-skeleton" aria-label="Generating chart">

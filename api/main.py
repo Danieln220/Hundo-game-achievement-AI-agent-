@@ -26,7 +26,9 @@ from data_layer import steam_client
 from data_layer import storage
 from data_layer import cache
 from data_layer.resolver import resolve_steam_id, SteamResolveError
-from data_layer.snapshot import ensure_snapshot, load_frames, PrivateProfileError
+from data_layer.snapshot import ensure_snapshot, has_snapshot, load_frames, PrivateProfileError
+
+import threading
 
 _CHARTS_DIR = Path(__file__).parent.parent / "data" / "charts"
 _CHARTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -154,38 +156,35 @@ def health():
     return {"status": "ok", "missing_secrets": missing_secrets()}
 
 
-@app.post("/session")
-def session(req: SessionReq):
-    """Resolve a profile to a SteamID64, ensure its snapshot exists, and return a
-    compact profile summary (avatar, persona, headline stats) for the UI header.
-    Synchronous build (~15-30s on first load; longer for big libraries)."""
-    _sweep_charts()  # opportunistic cleanup so long-running servers stay bounded
-    try:
-        steam_id = resolve_steam_id(req.profile)
-    except SteamResolveError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+# ── Async snapshot build (Step 15.4) ──────────────────────────────────────────
+# /session no longer blocks on the (possibly minutes-long) build — that exceeds
+# the hosting edge timeout for big libraries. Instead it kicks the build off in a
+# background thread and returns "building"; the client polls /session/status for
+# live progress. Status + progress live in the cache (Redis in prod) so they're
+# correct even if the host scales to multiple instances.
+_STATUS_TTL = 1800  # 30 min — comfortably longer than any build
 
-    try:
-        ensure_snapshot(steam_id)
-    except PrivateProfileError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Couldn't load profile: {e}")
 
+def _status_key(sid: str) -> str:
+    return f"snap:status:{sid}"
+
+
+def _progress_key(sid: str) -> str:
+    return f"snap:progress:{sid}"
+
+
+def _session_summary(steam_id: str) -> dict:
+    """Headline profile stats for the UI header (assumes the snapshot is ready)."""
     frames = load_frames(steam_id)
     ach, pu, games = frames["achievements"], frames["player_unlocks"], frames["games"]
-
-    # Headline stats for the profile header.
     total_per = ach.groupby("appid").size()
     unlocked_per = pu[pu["achieved"]].groupby("appid").size().reindex(total_per.index, fill_value=0)
     perfect = int(((unlocked_per == total_per) & (total_per > 0)).sum())
-
     summary = {}
     try:
         summary = steam_client.get_player_summary(steam_id)
     except Exception:
         pass
-
     return {
         "steam_id": steam_id,
         "persona": summary.get("personaname", ""),
@@ -195,6 +194,67 @@ def session(req: SessionReq):
         "total": int(len(ach)),
         "perfect": perfect,
     }
+
+
+def _run_build(steam_id: str) -> None:
+    """Background worker: build the snapshot, writing progress to the cache. The
+    build-lock inside ensure_snapshot dedupes concurrent builds for the same user."""
+    cache.set(_status_key(steam_id), "building", _STATUS_TTL)
+    cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
+
+    def cb(done: int, total: int) -> None:
+        cache.set(_progress_key(steam_id), f"{done}/{total}", _STATUS_TTL)
+
+    try:
+        ensure_snapshot(steam_id, progress_cb=cb)
+        cache.set(_status_key(steam_id), "ready", _STATUS_TTL)
+    except PrivateProfileError as e:
+        cache.set(_status_key(steam_id), f"failed:{e}", _STATUS_TTL)
+    except Exception as e:
+        cache.set(_status_key(steam_id), f"failed:Couldn't load profile: {e}", _STATUS_TTL)
+
+
+@app.post("/session")
+def session(req: SessionReq):
+    """Resolve a profile and return its summary if the snapshot is ready; otherwise
+    start the build in the background and return {status:"building"}. The client
+    then polls /session/status. Resolution stays synchronous (one fast Steam call)."""
+    _sweep_charts()  # opportunistic cleanup so long-running servers stay bounded
+    try:
+        steam_id = resolve_steam_id(req.profile)
+    except SteamResolveError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if has_snapshot(steam_id):
+        cache.set(_status_key(steam_id), "ready", _STATUS_TTL)
+        return {"status": "ready", **_session_summary(steam_id)}
+
+    # Not built yet → launch a background build and tell the client to poll.
+    cache.set(_status_key(steam_id), "building", _STATUS_TTL)
+    cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
+    threading.Thread(target=_run_build, args=(steam_id,), daemon=True).start()
+    return {"status": "building", "steam_id": steam_id}
+
+
+@app.get("/session/status")
+def session_status(steam_id: str):
+    """Poll a build's progress. Returns ready (+ summary), building (+ progress),
+    or failed (+ error). Cheap + fast — safe to poll every ~1.5s."""
+    if has_snapshot(steam_id):
+        return {"status": "ready", **_session_summary(steam_id)}
+
+    status = cache.get(_status_key(steam_id)) or ""
+    if status.startswith("failed:"):
+        return {"status": "failed", "error": status[len("failed:"):]}
+
+    prog = cache.get(_progress_key(steam_id)) or "0/0"
+    try:
+        done_s, total_s = prog.split("/")
+        done, total = int(done_s), int(total_s)
+    except ValueError:
+        done, total = 0, 0
+    pct = int(done * 100 / total) if total else 0
+    return {"status": "building", "progress": {"done": done, "total": total, "pct": pct}}
 
 
 @app.post("/ask")
@@ -252,7 +312,6 @@ def _warmup():
         pass
 
 
-import threading
 threading.Thread(target=_warmup, daemon=True).start()
 
 # Clear any charts left over from a previous run on boot.

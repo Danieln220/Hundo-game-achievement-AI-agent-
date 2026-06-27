@@ -10,7 +10,12 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
-        <div className="brand">
+        <div
+          className={`brand${session ? " clickable" : ""}`}
+          onClick={() => session && setSession(null)}
+          title={session ? "Back to start" : undefined}
+          role={session ? "button" : undefined}
+        >
           <span className="logo">🎮</span>
           <div>
             <h1>Hundo</h1>
@@ -19,7 +24,7 @@ export default function App() {
         </div>
         {session && (
           <button className="switch" onClick={() => setSession(null)}>
-            Switch profile
+            ← Start over
           </button>
         )}
       </header>
