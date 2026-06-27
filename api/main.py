@@ -25,6 +25,9 @@ from agent import run, run_stream, make_chart
 from data_layer import steam_client
 from data_layer import storage
 from data_layer import cache
+from data_layer import db
+
+import time
 from data_layer.resolver import resolve_steam_id, SteamResolveError
 from data_layer.snapshot import ensure_snapshot, has_snapshot, load_frames, PrivateProfileError
 
@@ -208,10 +211,31 @@ def _run_build(steam_id: str) -> None:
     try:
         ensure_snapshot(steam_id, progress_cb=cb)
         cache.set(_status_key(steam_id), "ready", _STATUS_TTL)
+        _record_snapshot_meta(steam_id)
     except PrivateProfileError as e:
         cache.set(_status_key(steam_id), f"failed:{e}", _STATUS_TTL)
+        db.upsert_snapshot(steam_id, status="failed", error=str(e))
     except Exception as e:
         cache.set(_status_key(steam_id), f"failed:Couldn't load profile: {e}", _STATUS_TTL)
+        db.upsert_snapshot(steam_id, status="failed", error=str(e))
+
+
+def _record_snapshot_meta(steam_id: str) -> None:
+    """Write snapshot header stats to the DB after a successful build (best-effort)."""
+    try:
+        frames = load_frames(steam_id)
+        ach, pu, games = frames["achievements"], frames["player_unlocks"], frames["games"]
+        location = f"snapshots/{steam_id}/" if storage.using_supabase() else f"data/snapshot/{steam_id}/"
+        db.upsert_snapshot(
+            steam_id,
+            status="ready",
+            games=int(len(games)),
+            total_achievements=int(len(ach)),
+            total_unlocked=int(pu["achieved"].sum()),
+            location=location,
+        )
+    except Exception:
+        pass
 
 
 @app.post("/session")
@@ -227,9 +251,12 @@ def session(req: SessionReq):
 
     if has_snapshot(steam_id):
         cache.set(_status_key(steam_id), "ready", _STATUS_TTL)
-        return {"status": "ready", **_session_summary(steam_id)}
+        summ = _session_summary(steam_id)
+        db.upsert_user(steam_id, req.profile, summ["persona"], summ["avatar"])
+        return {"status": "ready", **summ}
 
-    # Not built yet → launch a background build and tell the client to poll.
+    # Not built yet → record identity, launch a background build, tell client to poll.
+    db.upsert_user(steam_id, req.profile)
     cache.set(_status_key(steam_id), "building", _STATUS_TTL)
     cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
     threading.Thread(target=_run_build, args=(steam_id,), daemon=True).start()
@@ -241,7 +268,9 @@ def session_status(steam_id: str):
     """Poll a build's progress. Returns ready (+ summary), building (+ progress),
     or failed (+ error). Cheap + fast — safe to poll every ~1.5s."""
     if has_snapshot(steam_id):
-        return {"status": "ready", **_session_summary(steam_id)}
+        summ = _session_summary(steam_id)
+        db.upsert_user(steam_id, persona=summ["persona"], avatar=summ["avatar"])
+        return {"status": "ready", **summ}
 
     status = cache.get(_status_key(steam_id)) or ""
     if status.startswith("failed:"):
@@ -262,12 +291,15 @@ def ask(req: AskReq):
     """Answer a question. Returns the agent result (answer, route, trace fields,
     chart_url or chart_pending). For chart_pending answers, the client then calls
     /chart with this same result (answer-first UX)."""
+    t0 = time.perf_counter()
     result = run(
         req.question,
         steam_id=req.steam_id,
         history=req.history,
         with_insight=req.with_insight,
     )
+    db.log_query(req.steam_id, req.question, result.get("route"),
+                 int((time.perf_counter() - t0) * 1000))
     return _serialize(result)
 
 
@@ -281,6 +313,7 @@ def ask_stream(req: AskReq):
     each agent node fires, then a final `result` event with the serialized payload.
     The client reads this as a stream (fetch + ReadableStream)."""
     def gen():
+        t0 = time.perf_counter()
         for kind, payload in run_stream(
             req.question,
             steam_id=req.steam_id,
@@ -290,6 +323,8 @@ def ask_stream(req: AskReq):
             if kind == "progress":
                 yield _sse("progress", {"node": payload})
             else:
+                db.log_query(req.steam_id, req.question, payload.get("route"),
+                             int((time.perf_counter() - t0) * 1000))
                 yield _sse("result", _serialize(payload))
 
     return StreamingResponse(gen(), media_type="text/event-stream")

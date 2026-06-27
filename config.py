@@ -57,6 +57,12 @@ SUPABASE_BUCKET_CHARTS = os.environ.get("SUPABASE_BUCKET_CHARTS", "hundo-charts"
 SUPABASE_BUCKET_SNAPSHOTS = os.environ.get("SUPABASE_BUCKET_SNAPSHOTS", "hundo-snapshots")  # private
 USE_SUPABASE_STORAGE = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
 
+# Lean Postgres (Step 15.5) — identity + snapshot metadata + usage log. Reuses the
+# same Supabase project/creds via its PostgREST API (no DB driver dep). No-op when
+# unset; best-effort writes never block a request. Tables: steam_user, snapshot,
+# query_log (create once via Supabase SQL editor — see DEPLOY.md). NO auth/accounts.
+USE_DB = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+
 # ── Redis (Upstash) — rate-limit + snapshot build-lock (Step 15.3) ────────────
 # Used when BOTH are set; otherwise an in-memory fallback runs (fine for single-
 # process dev). Driven over Upstash's REST API with `requests` — no new dep.
