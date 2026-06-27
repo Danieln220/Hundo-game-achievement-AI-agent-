@@ -178,24 +178,21 @@ class ChartReq(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/health")
-def health(request: Request):
-    # Live cache round-trip + the client IP this host sees — diagnoses why rate
-    # limiting may not trigger (Upstash broken on the host vs. a rotating-IP proxy
-    # making every request look like a new client).
-    redis_ok = None
-    if cache.using_redis():
-        try:
-            cache.set("health:ping", "1", 30)
-            redis_ok = cache.get("health:ping") == "1"
-        except Exception:
-            redis_ok = False
-    return {
-        "status": "ok",
-        "missing_secrets": missing_secrets(),
-        "redis": cache.using_redis(),
-        "redis_ok": redis_ok,
-        "client_ip": _client_ip(request),
-    }
+def health(request: Request, debug: int = 0):
+    """Cheap liveness for the platform's frequent health checks. Pass ?debug=1 for
+    a live cache round-trip + the client IP this host sees (diagnostics) — kept off
+    by default so routine checks don't burn the Upstash command quota."""
+    out = {"status": "ok", "missing_secrets": missing_secrets()}
+    if debug:
+        redis_ok = None
+        if cache.using_redis():
+            try:
+                cache.set("health:ping", "1", 30)
+                redis_ok = cache.get("health:ping") == "1"
+            except Exception:
+                redis_ok = False
+        out.update(redis=cache.using_redis(), redis_ok=redis_ok, client_ip=_client_ip(request))
+    return out
 
 
 # ── Async snapshot build (Step 15.4) ──────────────────────────────────────────
