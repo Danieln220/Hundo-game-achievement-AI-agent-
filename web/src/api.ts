@@ -1,6 +1,8 @@
 import type { AskResult, SessionResult, Turn } from "./types";
 
-const BASE = (import.meta.env.VITE_API_URL as string) || "http://localhost:8000";
+// Strip any trailing slash so `BASE + "/session"` never becomes "…//session"
+// (a double slash 404s on FastAPI).
+const BASE = ((import.meta.env.VITE_API_URL as string) || "http://localhost:8000").replace(/\/+$/, "");
 
 async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(BASE + path, {
@@ -79,5 +81,7 @@ export async function askStream(
   return result;
 }
 
-// Prefix a relative chart_url (e.g. /charts/x.png) with the API origin for <img>.
-export const assetUrl = (url: string) => BASE + url;
+// Resolve a chart_url for <img>. In prod the backend returns an ABSOLUTE Supabase
+// URL (use as-is); in local dev it's a relative /charts/x.png (prefix the API origin).
+export const assetUrl = (url: string) =>
+  /^https?:\/\//.test(url) ? url : BASE + url;
