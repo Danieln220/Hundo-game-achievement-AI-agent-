@@ -1,34 +1,60 @@
-# Steam Achievement Analyst
+# Hundo — Steam Achievement Analyst
 
-A self-correcting data-analysis agent over Steam achievement data. Ask in
-plain language ("which games am I closest to 100% on?") and the agent plans,
-writes and runs pandas in a sandbox, validates and self-corrects, and answers
-with numbers, a chart, and the reasoning trace.
+A self-correcting, agentic AI analyst for your Steam achievements. Ask in plain
+English — *"which games am I closest to 100%?"*, *"build me a roadmap for Hollow
+Knight"*, *"give me a full profile audit"* — and the agent **plans the analysis,
+writes pandas, runs it in a sandbox, validates and fixes its own mistakes, and
+answers with a chart.**
 
-## Structure
+It never answers from memory: every number comes from real code run on your data,
+so it can't hallucinate a fake achievement.
 
-    app.py            Thin Streamlit UI — calls agent.run(), no logic
-    agent/            UI-agnostic agent core
-      __init__.py       run(question) — the seam every UI calls
-      graph.py          LangGraph state, nodes, wiring
-      sandbox.py        sandboxed code execution (security-critical)
-    data_layer/       Steam Web API fetchers + snapshot cache -> DataFrames
-    eval/             golden questions + offline eval harness
-    api/              FUTURE: FastAPI backend (React upgrade phase)
-    config.py         env-var config (works on Streamlit Cloud and Render)
-    Dockerfile        containerized; Streamlit now, uvicorn later
+## Why I built it
+I wanted to build a *real* agent, not a chatbot wrapper — something that grounds
+every answer in executed code, corrects itself, and is safe enough to run
+LLM-written code for strangers. Steam's free, official API made it a perfect,
+data-rich playground for the hard parts: a secure sandbox, a self-correction
+loop, and a clean path from local prototype to a deployed multi-user app.
 
-The rule that keeps the upgrade cheap: **all agent logic lives in `agent/`;
-the UI only calls `run()`.** Streamlit now; later, FastAPI wraps the same
-`run()` and React calls it — no rewrite.
+## Features
+- **Natural-language analysis** — grounded in sandboxed pandas, with a chart.
+- **Roadmap builder** — tiered, verified plan to 100% any owned *or* unowned game.
+- **Profile audit** — one request runs a battery of analyses into one report.
+- **How-to + time-to-complete** — web-searched guides with numbered sources.
+- **Easy wins / what to play next / rarest-flex / stuck detector.**
+- **Watch mode** — a live worker that reacts as you unlock achievements.
+- **Self-correction, ambiguity handling, multi-turn memory, streaming progress.**
 
-## Setup
+## Architecture
+All agent logic lives in `agent/` behind one seam — `run(question)`. Every UI
+(Streamlit, React+FastAPI, watch mode) just calls it.
 
-1. `cp .env.example .env` and fill in your keys (never commit `.env`)
-2. `pip install -r requirements.txt`
-3. Build the snapshot once (Day 1): implement and run `data_layer.snapshot.build_snapshot`
-4. `streamlit run app.py`
+    agent/        LangGraph agent: plan → code → sandbox → validate → self-correct → finalize
+    data_layer/   Steam fetchers + snapshot cache → 3 fixed tables; storage/cache/db adapters
+    api/          FastAPI backend (thin wrappers over run() / make_chart())
+    web/          React + TS frontend (Vite)
+    eval/         golden questions + offline scorer
+    app.py        bare Streamlit dev UI
 
-## Eval
+**Stack:** LangGraph · OpenAI-compatible LLM (DeepSeek) · pandas + matplotlib ·
+FastAPI · React/Vite · Supabase (Storage + Postgres) · Upstash Redis · Steam Web API.
 
-    python -m eval.run_eval
+## Run locally
+```bash
+# 1. backend
+pip install -r requirements.txt
+cp .env.example .env            # fill STEAM_API_KEY, LLM_API_KEY, TAVILY_API_KEY
+uvicorn api.main:app --port 8000
+
+# 2. frontend (separate terminal)
+cd web && npm install && npm run dev   # opens http://localhost:5173
+```
+Cloud services (Supabase, Upstash) are **optional locally** — unset, the app falls
+back to local disk + an in-memory cache. The snapshot builds automatically on the
+first profile load.
+
+Bare Streamlit UI instead: `streamlit run app.py`. Offline eval: `python -m eval.run_eval`.
+
+## Deploy
+Steam-only, frontend → Vercel, API → Render, with Supabase Storage + Postgres and
+Upstash Redis. See [DEPLOY.md](DEPLOY.md) for the step-by-step.

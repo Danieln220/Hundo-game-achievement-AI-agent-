@@ -3,7 +3,6 @@ import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { assetUrl } from "../api";
 import type { AskResult } from "../types";
-import ReasoningTrace from "./ReasoningTrace";
 import RoadmapCard from "./RoadmapCard";
 import AuditDashboard from "./AuditDashboard";
 
@@ -45,8 +44,6 @@ export default function Message(props: Props) {
   }
 
   const { result, chartUrl, chartLoading, onAction, retryQuestion, onRetry } = props;
-  const hasTrace =
-    !!result.plan || (result.code_history?.length ?? 0) > 0;
   const hasSources = (result.sources?.length ?? 0) > 0;
 
   // Route-specific rich rendering; markdown is the fallback for everything else.
@@ -101,8 +98,6 @@ export default function Message(props: Props) {
         {chartUrl && (
           <img className="chart" src={assetUrl(chartUrl)} alt="chart" />
         )}
-
-        {hasTrace && <ReasoningTrace result={result} />}
       </div>
     </div>
   );
