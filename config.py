@@ -29,7 +29,11 @@ CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(","
 
 MAX_RETRIES = 3            # bound the self-correction loop (total code attempts)
 EXEC_TIMEOUT_SECONDS = 10  # hard timeout for sandboxed code
-EXEC_MEMORY_MB = 512       # address-space cap for sandboxed code (POSIX only)
+# Virtual-address-space (RLIMIT_AS) cap for sandboxed code (POSIX only; no-op on
+# Windows). This is VIRTUAL memory, not RSS — pandas/numpy/matplotlib reserve large
+# virtual arenas they never physically use, so a too-low value spuriously
+# MemoryErrors on Linux even with tiny data. 2 GB virtual ≠ 2 GB RAM. Env-overridable.
+EXEC_MEMORY_MB = int(os.environ.get("EXEC_MEMORY_MB", "2048"))
 EXEC_MAX_OUTPUT_CHARS = 20000  # truncate sandbox result so a huge dump can't flood the UI
 LLM_TIMEOUT_SECONDS = 60   # per-call timeout for the LLM client
 SNAPSHOT_DIR = "data/snapshot"  # base dir; each user gets a <steam_id>/ subdir
