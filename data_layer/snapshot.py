@@ -18,12 +18,50 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import SNAPSHOT_DIR, STEAM_ID
+from config import SNAPSHOT_DIR, STEAM_ID, SNAPSHOT_LOCK_TTL
 from . import steam_client
+from . import storage
+from . import cache
 
 # Bounded so we fetch fast without tripping Steam's rate limits. Each game needs
 # 3 calls, so a big library = hundreds of calls; more workers = shorter wall time.
 _FETCH_WORKERS = 16
+
+# The four files that make up one user's snapshot. data/snapshot/<id>/ is the
+# local cache; in Supabase mode it also mirrors to the "snapshots" bucket under
+# the same <id>/<file> key. The local dir is just a regenerable cache then.
+_SNAP_FILES = ("owned_games.json", "schemas.json", "achievements.json", "global_pct.json")
+
+
+def _snap_key(steam_id: str, fname: str) -> str:
+    return f"{steam_id}/{fname}"
+
+
+def _upload_snapshot(steam_id: str) -> None:
+    """Mirror the locally-built snapshot up to object storage (Supabase mode)."""
+    out = _user_dir(steam_id)
+    for f in _SNAP_FILES:
+        p = out / f
+        if p.exists():
+            storage.put("snapshots", _snap_key(steam_id, f), p.read_bytes(),
+                        content_type="application/json")
+
+
+def _ensure_local_cache(steam_id: str) -> None:
+    """In Supabase mode, hydrate the local cache dir from the bucket if it's empty
+    (e.g. a fresh container). No-op locally or when nothing is stored remotely."""
+    if not storage.using_supabase():
+        return
+    out = _user_dir(steam_id)
+    if (out / "owned_games.json").exists():
+        return  # already cached on this instance
+    if not storage.exists("snapshots", _snap_key(steam_id, "owned_games.json")):
+        return  # nothing stored remotely yet
+    out.mkdir(parents=True, exist_ok=True)
+    for f in _SNAP_FILES:
+        key = _snap_key(steam_id, f)
+        if storage.exists("snapshots", key):
+            (out / f).write_bytes(storage.get("snapshots", key))
 
 # A snapshot older than this is considered stale and rebuilt by ensure_snapshot
 # when a max_age is requested. Keeps cached data fresh without piling up forever.
@@ -51,26 +89,45 @@ def _resolve_snapshot_dir(steam_id: str) -> Path:
 
 
 def has_snapshot(steam_id: str = STEAM_ID) -> bool:
-    """True if a usable snapshot already exists for this user."""
-    return (_resolve_snapshot_dir(steam_id) / "owned_games.json").exists()
+    """True if a usable snapshot already exists for this user (local cache or, in
+    Supabase mode, the object store)."""
+    if (_resolve_snapshot_dir(steam_id) / "owned_games.json").exists():
+        return True
+    if storage.using_supabase():
+        return storage.exists("snapshots", _snap_key(str(steam_id), "owned_games.json"))
+    return False
 
 
 def snapshot_age_days(steam_id: str = STEAM_ID) -> float | None:
     """Age of this user's snapshot in days, or None if there is none."""
     marker = _resolve_snapshot_dir(steam_id) / "owned_games.json"
-    if not marker.exists():
-        return None
-    return (time.time() - marker.stat().st_mtime) / 86400
+    if marker.exists():
+        return (time.time() - marker.stat().st_mtime) / 86400
+    if storage.using_supabase():
+        ts = storage.updated_at("snapshots", _snap_key(str(steam_id), "owned_games.json"))
+        if ts:
+            return (time.time() - ts) / 86400
+    return None
 
 
 def clear_snapshot(steam_id: str = STEAM_ID) -> bool:
-    """Delete a user's per-user snapshot dir. Returns True if something was removed.
-    Never touches the legacy flat layout (which holds the default user's eval data)."""
+    """Delete a user's snapshot (local cache + object store). Returns True if
+    something was removed. Never touches the legacy flat layout (which holds the
+    default user's eval data)."""
+    removed = False
     user_dir = _user_dir(steam_id)
     if user_dir.exists():
         shutil.rmtree(user_dir)
-        return True
-    return False
+        removed = True
+    if storage.using_supabase():
+        for f in _SNAP_FILES:
+            if storage.exists("snapshots", _snap_key(str(steam_id), f)):
+                try:
+                    storage.delete("snapshots", _snap_key(str(steam_id), f))
+                    removed = True
+                except Exception:
+                    pass
+    return removed
 
 
 def _fetch_one(kind: str, steam_id: str, appid: int) -> tuple[str, int, dict]:
@@ -139,7 +196,38 @@ def build_snapshot(steam_id: str = STEAM_ID, progress_cb=None) -> None:
     (out / "achievements.json").write_text(json.dumps(achievements, indent=2))
     (out / "global_pct.json").write_text(json.dumps(global_pct, indent=2))
 
+    if storage.using_supabase():
+        _upload_snapshot(steam_id)
+        print(f"Snapshot mirrored to object storage ({storage._SB_BUCKETS['snapshots']}/{steam_id}/)")
+
     print(f"Snapshot complete — {len(games)} games, 4 files in {out}/")
+
+
+def _build_with_lock(steam_id: str, progress_cb=None) -> None:
+    """Build a snapshot under a distributed lock so two concurrent first-time
+    visitors (or a retry) don't both fetch the whole library at once. If another
+    worker holds the lock, wait for it to finish and reuse its result; only build
+    ourselves if that build vanished (lock expired / failed)."""
+    lock_key = f"lock:snap:{steam_id}"
+    if cache.acquire_lock(lock_key, ttl_seconds=SNAPSHOT_LOCK_TTL):
+        try:
+            build_snapshot(steam_id, progress_cb=progress_cb)
+        finally:
+            cache.release_lock(lock_key)
+        return
+
+    # Someone else is building — poll until their lock clears (build fully written
+    # + uploaded), then reuse it. has_snapshot alone isn't enough: owned_games.json
+    # is written early, mid-build, so we wait on the LOCK, not the marker file.
+    waited = 0
+    while waited < SNAPSHOT_LOCK_TTL and cache.exists(lock_key):
+        time.sleep(2)
+        waited += 2
+    if not has_snapshot(steam_id) and cache.acquire_lock(lock_key, ttl_seconds=SNAPSHOT_LOCK_TTL):
+        try:
+            build_snapshot(steam_id, progress_cb=progress_cb)
+        finally:
+            cache.release_lock(lock_key)
 
 
 def ensure_snapshot(
@@ -148,15 +236,16 @@ def ensure_snapshot(
     progress_cb=None,
 ) -> None:
     """Build the snapshot if this user has none, or if `max_age_days` is given and
-    the existing one is older than that. Otherwise reuse the cached snapshot."""
-    if not has_snapshot(steam_id):
-        build_snapshot(steam_id, progress_cb=progress_cb)
-        return
-    if max_age_days is not None:
+    the existing one is older than that. Otherwise reuse the cached snapshot.
+    Builds run under a lock (see _build_with_lock) to avoid duplicate fetches."""
+    need_build = not has_snapshot(steam_id)
+    if not need_build and max_age_days is not None:
         age = snapshot_age_days(steam_id)
         if age is not None and age > max_age_days:
             print(f"Snapshot is {age:.1f} days old (> {max_age_days}) — refreshing...")
-            build_snapshot(steam_id, progress_cb=progress_cb)
+            need_build = True
+    if need_build:
+        _build_with_lock(steam_id, progress_cb=progress_cb)
 
 
 def load_frames(steam_id: str = STEAM_ID) -> dict[str, pd.DataFrame]:
@@ -166,6 +255,7 @@ def load_frames(steam_id: str = STEAM_ID) -> dict[str, pd.DataFrame]:
         player_unlocks -> appid, api_name, achieved, unlock_time
     Returns empty (correctly-typed) frames if no snapshot exists for the user.
     """
+    _ensure_local_cache(str(steam_id))  # hydrate from object storage if needed (Supabase mode)
     snap = _resolve_snapshot_dir(str(steam_id))
 
     owned_path = snap / "owned_games.json"

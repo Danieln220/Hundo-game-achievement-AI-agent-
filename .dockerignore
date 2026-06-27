@@ -1,0 +1,25 @@
+# Keep the API image lean — exclude everything the FastAPI backend doesn't need.
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Frontend (built & served by Vercel, not the API image)
+web/
+
+# Local-only data (snapshots/charts are rebuilt on the server; object storage in 15.2)
+data/snapshot/
+data/charts/
+data/search_cache/
+
+# Secrets & local docs
+.env
+.streamlit/secrets.toml
+CLAUDE.md
+PROJECT_SUMMARY.md
+eval/last_run.json
+
+# Scratch / OS
+*.log
+.DS_Store

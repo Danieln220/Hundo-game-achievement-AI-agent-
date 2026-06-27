@@ -11,17 +11,20 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import time
-
-from config import CORS_ORIGINS, CHART_TTL_HOURS, CHART_MAX_FILES, missing_secrets
+from config import (
+    CORS_ORIGINS, CHART_TTL_HOURS, CHART_MAX_FILES, missing_secrets,
+    RATE_LIMIT_ASK_PER_MIN, RATE_LIMIT_ASK_PER_DAY, RATE_LIMIT_SESSION_PER_MIN,
+)
 from agent import run, run_stream, make_chart
 from data_layer import steam_client
+from data_layer import storage
+from data_layer import cache
 from data_layer.resolver import resolve_steam_id, SteamResolveError
 from data_layer.snapshot import ensure_snapshot, load_frames, PrivateProfileError
 
@@ -30,41 +33,63 @@ _CHARTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _sweep_charts() -> int:
-    """Delete stale/excess chart PNGs so data/charts/ stays bounded.
+    """Delete stale/excess charts so the chart store stays bounded.
 
-    Charts are disposable (regenerable from the snapshot), so this is safe:
-    drop anything older than CHART_TTL_HOURS, then cap the dir to the newest
-    CHART_MAX_FILES. Best-effort — never raises into a request. Returns the
-    number of files removed. Multi-user note: in a deploy this moves to object
-    storage with a lifecycle/TTL policy (see CLAUDE.md "Multi-user / scaling
-    architecture")."""
-    try:
-        files = sorted(
-            _CHARTS_DIR.glob("*.png"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,  # newest first
-        )
-    except OSError:
-        return 0
-
-    now = time.time()
-    ttl = CHART_TTL_HOURS * 3600
-    removed = 0
-    for i, p in enumerate(files):
-        try:
-            too_old = (now - p.stat().st_mtime) > ttl
-            over_cap = i >= CHART_MAX_FILES
-            if too_old or over_cap:
-                p.unlink()
-                removed += 1
-        except OSError:
-            pass
-    return removed
+    Charts are disposable (regenerable from the snapshot), so this is safe: drop
+    anything older than CHART_TTL_HOURS, then cap to the newest CHART_MAX_FILES.
+    Delegates to the storage layer so it sweeps the local dir in dev and the
+    Supabase 'charts' bucket in prod (Supabase Storage has no native lifecycle
+    expiry). Best-effort — never raises into a request."""
+    return storage.sweep("charts", CHART_TTL_HOURS * 3600, CHART_MAX_FILES)
 
 # Fields that are large or internal — stripped from /ask responses.
 _DROP_FIELDS = {"schema", "history", "with_insight"}
 
 app = FastAPI(title="Hundo API", version="1.0", description="Steam achievement AI analyst")
+
+
+# ── Per-IP rate limiting (Step 15.3) ──────────────────────────────────────────
+# Registered BEFORE CORS on purpose: middleware added later is outermost, so CORS
+# must be added last to wrap our 429 responses with CORS headers — otherwise the
+# browser sees a CORS error instead of the friendly "slow down" message.
+
+def _client_ip(request: Request) -> str:
+    """Real client IP. On Render/Vercel we sit behind a proxy, so the original
+    client is the first hop in X-Forwarded-For."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+# path -> (bucket, [(window-label, seconds, limit), ...]). /ask and /ask/stream
+# share one bucket so streaming isn't a way around the limit.
+_ASK_WINDOWS = [("min", 60, RATE_LIMIT_ASK_PER_MIN), ("day", 86400, RATE_LIMIT_ASK_PER_DAY)]
+_RATE_RULES = {
+    "/ask": ("ask", _ASK_WINDOWS),
+    "/ask/stream": ("ask", _ASK_WINDOWS),
+    "/session": ("session", [("min", 60, RATE_LIMIT_SESSION_PER_MIN)]),
+}
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    rule = _RATE_RULES.get(request.url.path)
+    if rule:
+        bucket, windows = rule
+        ip = _client_ip(request)
+        for label, seconds, limit in windows:
+            key = f"rl:{bucket}:{label}:{ip}"
+            if cache.incr(key, seconds) > limit:
+                retry = max(cache.ttl(key), 1)
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": f"Rate limit reached ({limit} per {label}). Try again in ~{retry}s."},
+                    headers={"Retry-After": str(retry)},
+                )
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -76,7 +101,26 @@ app.mount("/charts", StaticFiles(directory=str(_CHARTS_DIR)), name="charts")
 
 
 def _chart_url(path: Optional[str]) -> Optional[str]:
-    return f"/charts/{Path(path).name}" if path else None
+    """Turn a freshly-generated local chart PNG into a browser-reachable URL.
+
+    The sandbox always writes the PNG to local disk (it has no network). In
+    Supabase mode we upload those bytes to the public 'charts' bucket and return
+    its public URL, then drop the local temp; in dev we just serve it from the
+    /charts static mount."""
+    if not path:
+        return None
+    name = Path(path).name
+    if storage.using_supabase():
+        try:
+            storage.put("charts", name, Path(path).read_bytes(), content_type="image/png")
+        except Exception:
+            return None
+        try:
+            Path(path).unlink()  # local temp no longer needed
+        except OSError:
+            pass
+        return storage.public_url("charts", name)
+    return f"/charts/{name}"
 
 
 def _serialize(result: dict) -> dict:

@@ -40,6 +40,32 @@ SNAPSHOT_DIR = "data/snapshot"  # base dir; each user gets a <steam_id>/ subdir
 CHART_TTL_HOURS = float(os.environ.get("CHART_TTL_HOURS", "6"))
 CHART_MAX_FILES = int(os.environ.get("CHART_MAX_FILES", "50"))
 
+# ── Object storage (Step 15.2) ────────────────────────────────────────────────
+# Charts + snapshot blobs go to Supabase Storage when BOTH of these are set;
+# otherwise everything stays on the local filesystem exactly as before (dev loop
+# + eval untouched). Driven over the Supabase Storage REST API — no new dep.
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+SUPABASE_BUCKET_CHARTS = os.environ.get("SUPABASE_BUCKET_CHARTS", "hundo-charts")        # public
+SUPABASE_BUCKET_SNAPSHOTS = os.environ.get("SUPABASE_BUCKET_SNAPSHOTS", "hundo-snapshots")  # private
+USE_SUPABASE_STORAGE = bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+
+# ── Redis (Upstash) — rate-limit + snapshot build-lock (Step 15.3) ────────────
+# Used when BOTH are set; otherwise an in-memory fallback runs (fine for single-
+# process dev). Driven over Upstash's REST API with `requests` — no new dep.
+UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
+USE_REDIS = bool(UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)
+
+# Per-IP rate limits (requests per window). All env-overridable.
+RATE_LIMIT_ASK_PER_MIN = int(os.environ.get("RATE_LIMIT_ASK_PER_MIN", "15"))
+RATE_LIMIT_ASK_PER_DAY = int(os.environ.get("RATE_LIMIT_ASK_PER_DAY", "150"))
+RATE_LIMIT_SESSION_PER_MIN = int(os.environ.get("RATE_LIMIT_SESSION_PER_MIN", "10"))
+
+# How long the snapshot build-lock is held (seconds). Generous: a huge library
+# (e.g. 1000 games ≈ 3000 Steam calls) can take a few minutes to build.
+SNAPSHOT_LOCK_TTL = int(os.environ.get("SNAPSHOT_LOCK_TTL", "600"))
+
 
 def missing_secrets() -> list[str]:
     """Return the names of required secrets that are not set.

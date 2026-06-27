@@ -1,0 +1,39 @@
+# Render blueprint for the Hundo FastAPI backend (Step 15.1).
+# Deploy: push to GitHub, then "New > Blueprint" in Render and point it here.
+# Secrets are declared with sync:false so Render prompts you to paste them
+# (they are NOT stored in this file). Set CORS_ORIGINS to your Vercel URL once
+# the frontend is deployed.
+services:
+  - type: web
+    name: hundo-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # ── Required secrets (paste in the Render dashboard) ──
+      - key: STEAM_API_KEY
+        sync: false
+      - key: LLM_API_KEY          # DeepSeek API key (see DEEPSEEK_BASE_URL)
+        sync: false
+      - key: TAVILY_API_KEY       # how-to + time-to-complete web search
+        sync: false
+      # ── Object storage (Supabase Storage, Step 15.2) ──
+      - key: SUPABASE_URL          # https://<project>.supabase.co
+        sync: false
+      - key: SUPABASE_SERVICE_KEY  # service_role key (server-only secret)
+        sync: false
+      # ── Redis (Upstash REST, Step 15.3) — rate-limit + build-lock ──
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      # ── Wiring (set after the Vercel frontend exists) ──
+      - key: CORS_ORIGINS         # e.g. https://hundo.vercel.app
+        sync: false
+      # ── Optional overrides ──
+      - key: STEAM_ID             # default profile; per-request resolution makes this optional
+        sync: false
+      - key: HUNDO_TRACING        # "true" to enable LangSmith (needs LANGSMITH_API_KEY)
+        value: "false"
