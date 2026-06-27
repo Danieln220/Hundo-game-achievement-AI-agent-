@@ -4,6 +4,7 @@ import type { AskResult, Turn } from "../types";
 import Message from "./Message";
 import ProgressSteps from "./ProgressSteps";
 import SuggestionChips from "./SuggestionChips";
+import { followupsFor } from "../followups";
 
 interface UserMsg {
   role: "user";
@@ -30,11 +31,26 @@ export default function Chat({
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, busy, progress]);
+
+  // Refocus the composer once a request settles, so you can keep typing without
+  // clicking back into the box after every send.
+  useEffect(() => {
+    if (!busy) inputRef.current?.focus();
+  }, [busy]);
+
+  // Auto-grow the textarea up to a cap as the question spans multiple lines.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [input]);
 
   function buildHistory(msgs: Msg[]): Turn[] {
     const turns: Turn[] = [];
@@ -151,12 +167,37 @@ export default function Chat({
         <div ref={endRef} />
       </div>
 
+      {(() => {
+        if (busy || messages.length === 0) return null;
+        const last = [...messages]
+          .reverse()
+          .find((m): m is AssistantMsg => m.role === "assistant");
+        const chips = followupsFor(last?.result);
+        if (!chips.length) return null;
+        return (
+          <div className="followups">
+            {chips.map((c) => (
+              <button key={c.q} className="example followup" onClick={() => send(c.q)}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
       <div className="composer">
-        <input
+        <textarea
+          ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send(input)}
-          placeholder="Ask about your achievements…"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send(input);
+            }
+          }}
+          placeholder="Ask about your achievements…  (Shift+Enter for a new line)"
+          rows={1}
           disabled={busy}
         />
         {busy ? (

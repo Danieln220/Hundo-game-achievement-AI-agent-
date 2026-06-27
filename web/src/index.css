@@ -124,15 +124,16 @@ h1, h2, h3, .display { font-family: "Chakra Petch", system-ui, sans-serif; lette
 .profile-stats b { color: var(--ink); font-family: "JetBrains Mono", monospace; font-weight: 700; }
 
 /* ── Buttons & inputs ────────────────────────────────────────────────────────*/
-input {
+input, textarea {
   background: var(--case); color: var(--ink);
   border: 1px solid var(--edge); border-radius: var(--r);
   padding: 12px 14px; font-size: 15px; outline: none;
   font-family: "Inter", sans-serif;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-input:focus { border-color: var(--gold-lo); box-shadow: 0 0 0 3px rgba(232,179,57,0.12); }
-input::placeholder { color: var(--ink-faint); }
+input:focus, textarea:focus { border-color: var(--gold-lo); box-shadow: 0 0 0 3px rgba(232,179,57,0.12); }
+input::placeholder, textarea::placeholder { color: var(--ink-faint); }
+textarea { resize: none; line-height: 1.45; overflow-y: auto; }
 
 button {
   background: linear-gradient(180deg, var(--gold), #c9991f);
@@ -236,8 +237,13 @@ button:disabled { opacity: 0.4; cursor: default; }
 .trace .plan { white-space: pre-wrap; }
 
 /* ── Composer ────────────────────────────────────────────────────────────────*/
-.composer { display: flex; gap: 9px; padding: 14px 0 22px; border-top: 1px solid var(--edge); }
-.composer input { flex: 1; }
+.composer { display: flex; gap: 9px; padding: 14px 0 22px; border-top: 1px solid var(--edge); align-items: flex-end; }
+.composer input, .composer textarea { flex: 1; }
+.composer button { flex: none; }
+
+/* ── Contextual follow-up chips (sit above the composer mid-conversation) ─────*/
+.followups { display: flex; flex-wrap: wrap; gap: 9px; padding: 12px 0 2px; }
+.followup { font-size: 13px; padding: 6px 12px; }
 
 /* ─────────────────────────────────────────────────────────────────────────────
    RARITY SYSTEM — the soul of the design
