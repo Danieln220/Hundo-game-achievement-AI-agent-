@@ -6,11 +6,13 @@ function Tier({
   cls,
   items,
   count,
+  onAsk,
 }: {
   title: string;
   cls: string;
   items: Achievement[];
   count: number;
+  onAsk?: (name: string) => void;
 }) {
   if (!items.length) return null;
   return (
@@ -21,7 +23,17 @@ function Tier({
       <ul className="tier-list">
         {items.map((a, i) => (
           <li key={i}>
-            <span className="ach-name">{a.name}</span>
+            {onAsk ? (
+              <button
+                className="ach-name ach-link"
+                onClick={() => onAsk(a.name)}
+                title="Get a guide for this achievement"
+              >
+                {a.name} <span className="ach-guide">↗ guide</span>
+              </button>
+            ) : (
+              <span className="ach-name">{a.name}</span>
+            )}
             <RarityChip pct={a.rarity_pct} />
             {a.description && !a.hidden && (
               <span className="ach-desc">{a.description}</span>
@@ -46,6 +58,11 @@ export default function RoadmapCard({
   data: RoadmapData;
   onAction?: (question: string) => void;
 }) {
+  // Clicking an achievement asks the curator for a real guide (agent + web search
+  // → answer with numbered sources, rendered right in the drawer).
+  const ask = onAction
+    ? (name: string) => onAction(`How do I unlock "${name}" in ${data.target}?`)
+    : undefined;
   return (
     <div className="roadmap">
       <div className="roadmap-head">
@@ -61,9 +78,9 @@ export default function RoadmapCard({
         </div>
       </div>
 
-      <Tier title="🟢 Quick wins" cls="quick" items={data.tiers.quick} count={data.tier_counts.quick} />
-      <Tier title="🟡 Moderate" cls="moderate" items={data.tiers.moderate} count={data.tier_counts.moderate} />
-      <Tier title="🔴 Challenge / grind" cls="challenge" items={data.tiers.challenge} count={data.tier_counts.challenge} />
+      <Tier title="🟢 Quick wins" cls="quick" items={data.tiers.quick} count={data.tier_counts.quick} onAsk={ask} />
+      <Tier title="🟡 Moderate" cls="moderate" items={data.tiers.moderate} count={data.tier_counts.moderate} onAsk={ask} />
+      <Tier title="🔴 Challenge / grind" cls="challenge" items={data.tiers.challenge} count={data.tier_counts.challenge} onAsk={ask} />
 
       {data.howto.length > 0 && (
         <div className="roadmap-howto">

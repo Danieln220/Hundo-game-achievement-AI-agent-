@@ -1,5 +1,6 @@
 import type {
   AskResult,
+  LibraryData,
   SessionResponse,
   SessionStatus,
   Turn,
@@ -55,6 +56,14 @@ export const sessionStatus = (steamId: string) =>
 // "Sign in through Steam" (OpenID) — top-level navigation to the backend, which
 // redirects to Steam and bounces back to the app with ?steam_id=.
 export const steamLoginUrl = () => `${BASE}/auth/steam/login`;
+
+// Full trophy-case dataset for a built profile (Step 17).
+export const getLibrary = (steamId: string) =>
+  get<LibraryData>(`/library?steam_id=${encodeURIComponent(steamId)}`);
+
+// Currently most-played Steam games the user does NOT own (discovery).
+export const getPopular = (steamId: string) =>
+  get<{ games: { appid: number; name: string }[] }>(`/popular?steam_id=${encodeURIComponent(steamId)}`);
 
 export const ask = (question: string, steam_id: string, history: Turn[]) =>
   post<AskResult>("/ask", { question, steam_id, history, with_insight: true });

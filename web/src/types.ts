@@ -10,6 +10,15 @@ export interface Achievement {
   description?: string;
   hidden?: boolean;
   game?: string;
+  category?: string;   // Roadmap v2 phase tag (LLM-inferred)
+  missable?: boolean;  // Roadmap v2 (best-effort)
+}
+
+export interface RoadmapPhase {
+  key: string;
+  title: string;
+  warn?: boolean;
+  achievements: Achievement[];
 }
 
 export interface RoadmapData {
@@ -22,6 +31,7 @@ export interface RoadmapData {
   tiers: { quick: Achievement[]; moderate: Achievement[]; challenge: Achievement[] };
   tier_counts: { quick: number; moderate: number; challenge: number };
   howto: { name: string; url: string }[];
+  phases?: RoadmapPhase[];
 }
 
 export interface AuditData {
@@ -84,4 +94,53 @@ export type SessionStatus =
 export interface Turn {
   question: string;
   answer: string;
+}
+
+// ── Trophy Case (library view, Step 17) ──────────────────────────────────────
+export interface Card {
+  name: string;
+  desc: string;
+  game: string;
+  icon: string;
+  pct: number | null;
+  achieved: boolean;
+  t: number | null;
+  hidden: boolean;
+}
+export interface LibGame {
+  game: string;
+  app: number;
+  total: number;
+  unlocked: number;
+  pct: number;
+  avg: number;
+  play: number;
+  achievements: Card[];
+}
+export interface Curator {
+  rarest: { name: string; game: string; pct: number | null }[];
+  quick: { name: string; game: string; pct: number | null }[];
+  closest: { game: string; pct: number; remaining: number } | null;
+  stalled: { game: string; pct: number }[];
+  beatable: { game: string; total: number; userPct: number; avg: number }[];
+}
+export interface LibraryProfile {
+  name: string;
+  avatar: string;
+  gamesTotal: number;
+  gamesWithAch: number;
+  started: number;
+  perfect: number;
+  unlocked: number;
+  total: number;
+  overall: number;
+}
+export interface LibraryData {
+  profile: LibraryProfile;
+  cards: Card[];
+  games: LibGame[];
+  curator: Curator;
+  mix: { common: number; uncommon: number; rare: number; ultra: number };
+  flex: Card[];
+  library: string[];
 }

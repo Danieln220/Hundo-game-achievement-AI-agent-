@@ -30,6 +30,7 @@ from data_layer import steam_client
 from data_layer import storage
 from data_layer import cache
 from data_layer import db
+from data_layer.library import build_library
 
 import time
 from data_layer.resolver import resolve_steam_id, SteamResolveError
@@ -343,6 +344,50 @@ def session(req: SessionReq):
     cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
     threading.Thread(target=_run_build, args=(steam_id,), daemon=True).start()
     return {"status": "building", "steam_id": steam_id}
+
+
+@app.get("/library")
+def library(steam_id: str):
+    """The full trophy-case dataset (profile, cards, games, curator highlights) for
+    a built profile. Read-only transform over the snapshot — see data_layer/library."""
+    if not has_snapshot(steam_id):
+        raise HTTPException(status_code=404, detail="No snapshot yet — load the profile first.")
+    lib = build_library(steam_id)
+    try:
+        s = steam_client.get_player_summary(steam_id)
+        lib["profile"]["name"] = s.get("personaname", "") or steam_id
+        lib["profile"]["avatar"] = s.get("avatarfull", "")
+    except Exception:
+        lib["profile"]["name"] = lib["profile"]["name"] or steam_id
+    return lib
+
+
+@app.get("/popular")
+def popular(steam_id: str):
+    """Currently most-played Steam games the user does NOT own — discovery picks for
+    a fresh 100% (the unowned-roadmap path handles these). appdetails are cached
+    per-app (shared across users) so this stays cheap."""
+    from agent.search import cached_json
+    owned: set[int] = set()
+    if has_snapshot(steam_id):
+        try:
+            owned = {int(a) for a in load_frames(steam_id)["games"]["appid"].tolist()}
+        except Exception:
+            owned = set()
+    out = []
+    try:
+        for appid in steam_client.get_most_played():
+            if appid in owned:
+                continue
+            d = cached_json(f"appdetails:{appid}", lambda a=appid: steam_client.get_app_details(a))
+            if not d or d.get("type") != "game" or not d.get("name"):
+                continue
+            out.append({"appid": appid, "name": d["name"]})
+            if len(out) >= 12:
+                break
+    except Exception:
+        pass
+    return {"games": out}
 
 
 @app.get("/session/status")

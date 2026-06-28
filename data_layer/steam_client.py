@@ -132,3 +132,28 @@ def get_global_achievement_pct(appid: int) -> dict:
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def get_most_played() -> list[int]:
+    """ISteamChartsService/GetMostPlayedGames — currently most-played games on Steam
+    (public, no key). Returns ranked appids. Used to surface 'popular right now'."""
+    resp = requests.get(f"{BASE}/ISteamChartsService/GetMostPlayedGames/v1/", timeout=10)
+    resp.raise_for_status()
+    ranks = resp.json().get("response", {}).get("ranks", [])
+    return [r["appid"] for r in ranks if r.get("appid")]
+
+
+def get_app_details(appid: int) -> dict:
+    """Steam storefront appdetails (basic) for one app → {name, type}. {} on failure
+    or non-success. Used to resolve names for the 'popular right now' picks."""
+    resp = requests.get(
+        "https://store.steampowered.com/api/appdetails",
+        params={"appids": appid, "filters": "basic"},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    entry = resp.json().get(str(appid), {})
+    if not entry.get("success"):
+        return {}
+    d = entry.get("data", {})
+    return {"name": d.get("name", ""), "type": d.get("type", "")}

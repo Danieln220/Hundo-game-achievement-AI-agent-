@@ -841,6 +841,77 @@ def _apply_unowned_filter(question: str, achievements: list[dict]) -> list[dict]
     return [a for i, a in enumerate(achievements) if i not in drop]
 
 
+# ── Phase tagging (Roadmap v2) ────────────────────────────────────────────────
+# The achievement LIST stays grounded (sandbox); these CATEGORY/missable tags are
+# an LLM interpretation, so the UI labels the result a "suggested plan".
+_ROADMAP_PHASE_MAX = 60
+_PHASE_CATEGORIES = ["story", "collectible", "combat", "skill", "grind", "multiplayer", "dlc", "misc"]
+_PHASE_DEFS = [
+    ("story", "📖 Story & progression"),
+    ("collectible", "🗺️ Collectibles & exploration"),
+    ("combat", "⚔️ Combat & encounters"),
+    ("skill", "🎯 Skill challenges"),
+    ("grind", "⏳ The grind"),
+    ("multiplayer", "👥 Multiplayer"),
+    ("dlc", "🧩 DLC"),
+    ("misc", "✦ Everything else"),
+]
+_ROADMAP_PHASE_SYSTEM = """You sort video-game achievements into a completion game-plan.
+For EACH numbered achievement output one line: "<N>: <category>[ missable]".
+category is EXACTLY one of: story, collectible, combat, skill, grind, multiplayer, dlc, misc.
+- story: main-story / campaign / progression milestones.
+- collectible: find/collect/explore/discover items, areas, or lore.
+- combat: defeat enemies/bosses, kills, weapon use.
+- skill: flawless/hard execution (no damage, speedrun, high score, hardest difficulty).
+- grind: large repeated counts / long playtime / level or currency farming.
+- multiplayer: online/co-op/PvP/ranked.
+- dlc: tied to DLC/expansion content.
+- misc: doesn't clearly fit the others.
+Append " missable" ONLY if the text strongly implies it can be permanently missed
+(e.g. "in a single playthrough", "before <point>", "without dying/killing anyone").
+Use ONLY the name + description. Output ONLY the lines."""
+
+
+def _tag_phases(remaining: list, target: str) -> list:
+    """Group the (grounded) remaining achievements into an ordered, phase-based plan
+    via one Flash classification pass. Missables get a synthetic first phase (timing
+    matters most); the rest fall into category phases in a sensible completion order.
+    Best-effort — any failure leaves a single 'Everything else' phase."""
+    items = remaining[:_ROADMAP_PHASE_MAX]
+    listing = "\n".join(
+        f"{i}. {a.get('name', '')}" +
+        (f" — {a.get('description', '').strip()}" if a.get("description") and not a.get("hidden") else "")
+        for i, a in enumerate(items, 1)
+    )
+    tags: dict[int, tuple[str, bool]] = {}
+    try:
+        raw = call_llm(f"Game: {target}\n\nAchievements:\n{listing}",
+                       model=DEEPSEEK_MODEL_FLASH, system=_ROADMAP_PHASE_SYSTEM)
+        for line in raw.splitlines():
+            m = re.match(r"\s*(\d+)\s*[:.\)]\s*([a-zA-Z]+)(\s+missable)?", line.strip())
+            if not m:
+                continue
+            cat = m.group(2).lower()
+            tags[int(m.group(1)) - 1] = (cat if cat in _PHASE_CATEGORIES else "misc", bool(m.group(3)))
+    except Exception:
+        pass
+
+    for i, a in enumerate(items):
+        cat, missable = tags.get(i, ("misc", False))
+        a["category"], a["missable"] = cat, missable
+
+    phases = []
+    missables = [a for a in items if a.get("missable")]
+    if missables:
+        phases.append({"key": "missable", "title": "⚠️ Missables — do these at the right time",
+                       "achievements": missables, "warn": True})
+    for key, title in _PHASE_DEFS:
+        grp = [a for a in items if a.get("category") == key and not a.get("missable")]
+        if grp:
+            phases.append({"key": key, "title": title, "achievements": grp})
+    return phases
+
+
 def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
     """Flagship: build a VERIFIED, tiered completion roadmap. For OWNED games the
     achievement data comes from the sandbox (real, still-locked achievements with
@@ -1010,6 +1081,8 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
         },
         "tier_counts": {"quick": len(quick), "moderate": len(moderate), "challenge": len(challenge)},
         "howto": [{"name": n, "url": u} for n, u in howto_links],
+        # Suggested phase plan (LLM-tagged on top of the grounded list).
+        "phases": _tag_phases(remaining, target),
     }
     return {"answer": "\n".join(parts), "roadmap": roadmap_data,
             "code_history": [code] if code else [], "done": True}

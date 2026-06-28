@@ -71,6 +71,16 @@ def _ensure_local_cache(steam_id: str) -> None:
 DEFAULT_MAX_AGE_DAYS = 7
 
 
+def load_schemas(steam_id: str = STEAM_ID) -> dict:
+    """Raw GetSchemaForGame payloads keyed by appid (str). Used by the library view
+    for achievement icons — NOT part of the agent's fixed 3-frame contract, so it
+    lives here as a separate read. Hydrates the local cache first (Supabase mode)."""
+    _ensure_local_cache(str(steam_id))
+    snap = _resolve_snapshot_dir(str(steam_id))
+    p = snap / "schemas.json"
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
 class PrivateProfileError(RuntimeError):
     """Raised when a profile is private / friends-only and exposes no games."""
 

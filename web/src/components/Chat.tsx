@@ -22,9 +22,20 @@ type Msg = UserMsg | AssistantMsg;
 export default function Chat({
   steamId,
   games,
+  inject,
+  greeting,
+  starters,
 }: {
   steamId: string;
   games: number;
+  // External question to auto-send (e.g. from the trophy case). Bump `nonce` to fire.
+  inject?: { q: string; nonce: number };
+  // Optional opening line + a minimal set of starter chips (curator drawer). When
+  // omitted, falls back to the full categorized SuggestionChips. A chip with `q`
+  // sends immediately; a chip with `fill` PREFILLS the composer (a prebuilt
+  // question the user completes, e.g. by adding a game name) and focuses it.
+  greeting?: string;
+  starters?: { label: string; q?: string; fill?: string }[];
 }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -55,6 +66,12 @@ export default function Chat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
 
+  // Auto-send an externally injected question (trophy-case actions).
+  useEffect(() => {
+    if (inject?.q) send(inject.q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inject?.nonce]);
+
   // Auto-grow the textarea up to a cap as the question spans multiple lines.
   useEffect(() => {
     const el = inputRef.current;
@@ -77,6 +94,16 @@ export default function Chat({
 
   function stop() {
     abortRef.current?.abort();
+  }
+
+  // Prefill the composer with a prebuilt question and focus it (cursor at the end,
+  // so the user just types the game/name to complete it). Does NOT send.
+  function prefill(text: string) {
+    setInput(text);
+    setTimeout(() => {
+      const el = inputRef.current;
+      if (el) { el.focus(); el.setSelectionRange(text.length, text.length); }
+    }, 0);
   }
 
   async function send(q: string) {
@@ -157,10 +184,21 @@ export default function Chat({
     <div className="chat">
       <div className="messages">
         {messages.length === 0 && (
-          <div className="welcome">
-            <p className="muted">Loaded {games} games. Ask me anything — or try:</p>
-            <SuggestionChips onPick={send} />
-          </div>
+          greeting ? (
+            <div className="curator-welcome">
+              <div className="curator-greet">{greeting}</div>
+              <div className="curator-starters">
+                {(starters ?? []).map((s) => (
+                  <button key={s.label} className="example" onClick={() => (s.fill ? prefill(s.fill) : send(s.q!))}>{s.label}</button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="welcome">
+              <p className="muted">Loaded {games} games. Ask me anything — or try:</p>
+              <SuggestionChips onPick={send} />
+            </div>
+          )
         )}
 
         {messages.map((m, i) =>
