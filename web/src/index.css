@@ -51,13 +51,11 @@ h1, h2, h3, .display { font-family: "Chakra Petch", system-ui, sans-serif; lette
 .mono, .stat-num, .tile-num, .ach-rarity { font-family: "JetBrains Mono", monospace; }
 
 .app {
-  /* Width is controlled by each view's own wrapper (gate ~540, trophy case ~1320,
-     roadmap ~1040) — no global cap, or it shrinks everything to one column. */
+  /* A plain block — each view's own wrapper (gate ~540, trophy case ~1320, roadmap
+     ~1040) centers itself via max-width + margin:auto. NOT flex: a flex child with
+     margin:0 auto shrink-wraps to its content, collapsing the grids to one column. */
   width: 100%;
-  margin: 0 auto;
   min-height: 100%;
-  display: flex;
-  flex-direction: column;
 }
 
 /* ── Header: a slim brass plaque ─────────────────────────────────────────────*/
@@ -154,7 +152,11 @@ button:disabled { opacity: 0.4; cursor: default; }
 .error { color: var(--danger); }
 
 /* ── Profile gate ────────────────────────────────────────────────────────────*/
-.gate { margin: auto; width: 100%; max-width: 540px; text-align: center; padding: 48px 0; }
+.gate {
+  width: 100%; max-width: 540px; margin: 0 auto; text-align: center;
+  min-height: 88vh; display: flex; flex-direction: column; justify-content: center;
+  padding: 24px 18px;
+}
 .gate h2 { font-size: 30px; margin-bottom: 10px; line-height: 1.15; }
 .gate-row { display: flex; gap: 9px; margin: 22px 0 8px; }
 .gate-row input { flex: 1; }
