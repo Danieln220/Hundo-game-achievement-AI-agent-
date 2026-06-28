@@ -11,19 +11,25 @@ export const C = {
 
 export type Tier = "common" | "uncommon" | "rare" | "ultra";
 
-export function tierOf(pct: number | null | undefined): Tier {
-  if (pct == null) return "common";
-  if (pct < 5) return "ultra";
-  if (pct < 10) return "rare";
-  if (pct < 30) return "uncommon";
+// Steam sometimes hands us rarity as a string ("31.1"); coerce defensively so a
+// string can never crash pctLabel (.toFixed) or mis-tier.
+export function tierOf(pct: number | string | null | undefined): Tier {
+  const n = pct == null ? NaN : Number(pct);
+  if (Number.isNaN(n)) return "common";
+  if (n < 5) return "ultra";
+  if (n < 10) return "rare";
+  if (n < 30) return "uncommon";
   return "common";
 }
 
 export const tierColor = (t: Tier) =>
   ({ common: C.common, uncommon: C.uncommon, rare: C.rare, ultra: C.ua }[t]);
 
-export const pctLabel = (pct: number | null | undefined) =>
-  pct == null ? "—" : (pct < 5 ? pct.toFixed(1) : Math.round(pct)) + "%";
+export const pctLabel = (pct: number | string | null | undefined) => {
+  const n = pct == null ? NaN : Number(pct);
+  if (Number.isNaN(n)) return "—";
+  return (n < 5 ? n.toFixed(1) : Math.round(n)) + "%";
+};
 
 // Holographic text fill for ultra-rare names/chips.
 export const HOLO: React.CSSProperties = {

@@ -763,6 +763,14 @@ def _suggest_owned_games(target: str, games_df: pd.DataFrame, n: int = 3) -> lis
     return out
 
 
+def _num(v):
+    """Coerce Steam's rarity (often a string like '31.1') to float; None if invalid."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _fetch_schema_and_rarity(appid: int) -> Optional[dict]:
     """Live-fetch a game's full achievement schema + global rarity (both endpoints
     work for ANY appid). Returns {"achievements": [{name, rarity_pct, description,
@@ -782,7 +790,7 @@ def _fetch_schema_and_rarity(appid: int) -> Optional[dict]:
     return {"achievements": [
         {
             "name": a.get("displayName") or a.get("name"),
-            "rarity_pct": pct.get(a.get("name")),
+            "rarity_pct": _num(pct.get(a.get("name"))),
             "description": a.get("description", ""),
             "hidden": bool(a.get("hidden", 0)),
         }
@@ -810,6 +818,10 @@ def _unowned_roadmap_data(name: str) -> Optional[dict]:
     achs = (payload or {}).get("achievements") or []
     if not achs:
         return None
+    # Normalize rarity to float (handles older cache entries that stored Steam's
+    # raw string percent) so the API + UI always get a number.
+    for a in achs:
+        a["rarity_pct"] = _num(a.get("rarity_pct"))
     # Easiest-first (highest global rarity %), NaN/unknown last — matches owned path.
     achs.sort(key=lambda a: (_rarity(a) is None, -(_rarity(a) or 0)))
     return {"target": resolved, "total": len(achs), "remaining": achs}
