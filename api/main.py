@@ -75,7 +75,7 @@ def _sweep_charts() -> int:
     return storage.sweep("charts", CHART_TTL_HOURS * 3600, CHART_MAX_FILES)
 
 # Fields that are large or internal — stripped from /ask responses.
-_DROP_FIELDS = {"schema", "history", "with_insight"}
+_DROP_FIELDS = {"schema", "history", "with_insight", "_token_sink"}
 
 app = FastAPI(title="Hundo API", version="1.0", description="Steam achievement AI analyst")
 
@@ -449,6 +449,8 @@ def ask_stream(req: AskReq):
         ):
             if kind == "progress":
                 yield _sse("progress", {"node": payload})
+            elif kind == "token":
+                yield _sse("token", {"text": payload})
             else:
                 db.log_query(req.steam_id, req.question, payload.get("route"),
                              int((time.perf_counter() - t0) * 1000))

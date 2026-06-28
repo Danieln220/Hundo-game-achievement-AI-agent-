@@ -114,22 +114,44 @@ def run_stream(
         return
 
     app = build_graph(frames)
+
+    # Run the graph in a background thread so answer TOKENS can stream out (via a
+    # queue) WHILE a node is still running — app.stream alone only yields between
+    # nodes. The graph pushes ("token", delta) through `_token_sink`; we also push
+    # ("progress", node). The generator below drains the queue live.
+    import queue as _queue
+    import threading as _threading
+    q: "_queue.Queue" = _queue.Queue()
+    holder: dict = {}
     inp = {
         "question": question,
         "steam_id": steam_id,
         "history": history or [],
         "with_insight": with_insight,
         "retries": 0,
+        "_token_sink": lambda tok: q.put(("token", tok)),
     }
-    final: dict = {}
-    # "updates" tells us which node just ran (progress); "values" carries the full state.
-    for mode, chunk in app.stream(inp, stream_mode=["updates", "values"]):
-        if mode == "updates":
-            for node_name in chunk:
-                yield "progress", node_name
-        else:  # values
-            final = chunk
-    yield "result", final
+
+    def _worker():
+        try:
+            for mode, chunk in app.stream(inp, stream_mode=["updates", "values"]):
+                if mode == "updates":
+                    for node_name in chunk:
+                        q.put(("progress", node_name))
+                else:
+                    holder["final"] = chunk
+        except Exception as exc:  # surface, don't hang the stream
+            holder["final"] = {"answer": f"⚠️ {exc}", "done": True}
+        finally:
+            q.put(("__done__", None))
+
+    _threading.Thread(target=_worker, daemon=True).start()
+    while True:
+        kind, payload = q.get()
+        if kind == "__done__":
+            break
+        yield kind, payload
+    yield "result", holder.get("final", {})
 
 
 def make_chart(result: dict) -> Optional[str]:

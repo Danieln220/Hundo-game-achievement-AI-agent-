@@ -54,6 +54,7 @@ class AgentState(TypedDict, total=False):
     chart_pending: bool                # True if a chart applies (generated post-answer)
     chart_path: Optional[str]
     done: bool
+    _token_sink: Optional[object]      # run-only callable(token) for live answer streaming
 
 
 # ── System prompts ────────────────────────────────────────────────────────────
@@ -584,7 +585,10 @@ def howto_search_node(state: AgentState) -> AgentState:
         f"Web search results:\n{context}\n\n"
         "Write a practical how-to answer with concrete steps, then list the source URLs."
     )
-    answer = call_llm(prompt, model=DEEPSEEK_MODEL_PRO, system=_HOWTO_SYSTEM)
+    # Flash, not Pro: this only summarizes the fetched snippets into steps — far
+    # faster, and quality is plenty for a how-to. Stream tokens live if a sink is set.
+    answer = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_HOWTO_SYSTEM,
+                      on_token=state.get("_token_sink"))
     return {"answer": answer, "sources": results, "done": True}
 
 
@@ -1027,15 +1031,20 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
             moderate.append(a)
 
     # Bounded how-to lookups for the hardest named (non-hidden) achievements.
-    howto_links = []
+    # Run them CONCURRENTLY — sequential web searches dominated roadmap latency.
     hardest = sorted(
         [a for a in remaining if _rarity(a) is not None and not a.get("hidden")],
         key=_rarity,
     )[:_ROADMAP_MAX_HOWTO]
-    for a in hardest:
+
+    def _one_link(a):
         hits = web_search(f"{a['name']} {target} how to unlock", max_results=1)
-        if hits:
-            howto_links.append((a["name"], hits[0]["url"]))
+        return (a["name"], hits[0]["url"]) if hits else None
+
+    howto_links = []
+    if hardest:
+        with ThreadPoolExecutor(max_workers=len(hardest)) as pool:
+            howto_links = [r for r in pool.map(_one_link, hardest) if r]
 
     def _fmt(items: list) -> str:
         lines = []
@@ -1273,10 +1282,12 @@ def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSt
         "Write a clear, concise natural-language answer."
     )
 
-    # Run finalize + verify concurrently.
+    # Run finalize + verify concurrently. Stream the answer's tokens live if a sink
+    # is set (web UI); None on the eval path → normal buffered call.
+    sink = state.get("_token_sink")
     with ThreadPoolExecutor(max_workers=2) as pool:
         fin_fut = pool.submit(
-            call_llm, finalize_prompt, DEEPSEEK_MODEL_FLASH, _FINALIZE_SYSTEM
+            call_llm, finalize_prompt, DEEPSEEK_MODEL_FLASH, _FINALIZE_SYSTEM, sink
         )
         ver_fut = pool.submit(_run_verify, state)
         answer = fin_fut.result()

@@ -41,6 +41,7 @@ export default function Chat({
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string[]>([]);
+  const [streamingText, setStreamingText] = useState(""); // live answer tokens
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -50,7 +51,7 @@ export default function Chat({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, busy, progress]);
+  }, [messages, busy, progress, streamingText]);
 
   // When a request settles: flush any queued follow-up, else refocus the composer
   // so you can keep typing without clicking back into the box.
@@ -123,6 +124,7 @@ export default function Chat({
     setInput("");
     setBusy(true);
     setProgress([]);
+    setStreamingText("");
 
     try {
       const result = await askStream(
@@ -130,8 +132,10 @@ export default function Chat({
         steamId,
         history,
         (node) => setProgress((p) => [...p, node]),
-        controller.signal
+        controller.signal,
+        (tok) => setStreamingText((s) => s + tok)
       );
+      setStreamingText("");
       setMessages((m) => [
         ...m,
         {
@@ -176,6 +180,7 @@ export default function Chat({
       ]);
     } finally {
       setBusy(false);
+      setStreamingText("");
       abortRef.current = null;
     }
   }
@@ -218,7 +223,14 @@ export default function Chat({
           )
         )}
 
-        {busy && <ProgressSteps nodes={progress} />}
+        {busy && streamingText && (
+          <div className="msg assistant">
+            <div className="bubble">
+              <div className="streaming">{streamingText}<span className="stream-caret" /></div>
+            </div>
+          </div>
+        )}
+        {busy && !streamingText && <ProgressSteps nodes={progress} />}
         <div ref={endRef} />
       </div>
 

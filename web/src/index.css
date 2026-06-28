@@ -660,6 +660,14 @@ button:disabled { opacity: 0.4; cursor: default; }
 .curator-body .chat { flex: 1; min-height: 0; }
 .curator-body .messages { padding: 16px 0; }
 
+/* live answer streaming (tokens before the final rendered message) */
+.streaming { font-size: 15px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.stream-caret {
+  display: inline-block; width: 7px; height: 15px; margin-left: 2px; vertical-align: text-bottom;
+  background: var(--gold); animation: blink 1s steps(2) infinite;
+}
+@keyframes blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
 /* roadmap checklist checkbox (dark-theme styled; native default renders white) */
 .rm-check {
   appearance: none; -webkit-appearance: none;

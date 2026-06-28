@@ -22,15 +22,42 @@ _RETRYABLE = (APIConnectionError, APITimeoutError, RateLimitError, InternalServe
 _MAX_ATTEMPTS = 3
 
 
-def call_llm(prompt: str, model: str = DEEPSEEK_MODEL_FLASH, system: str = "") -> str:
+def call_llm(prompt: str, model: str = DEEPSEEK_MODEL_FLASH, system: str = "",
+             on_token=None) -> str:
     """Call DeepSeek and return the stripped text response.
 
     temperature=0 keeps code generation deterministic across retries.
-    Retries transient failures with exponential backoff (1s, 2s, 4s)."""
+    Retries transient failures with exponential backoff (1s, 2s, 4s).
+
+    If `on_token` is given, the response is STREAMED: each text delta is passed to
+    on_token(delta) as it arrives (for live UI streaming) and the full text is still
+    returned. Streaming failures fall back to the normal buffered call."""
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
+
+    if on_token is not None:
+        try:
+            parts = []
+            stream = _client.chat.completions.create(
+                model=model, messages=messages, temperature=0, stream=True,
+            )
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    parts.append(delta)
+                    try:
+                        on_token(delta)
+                    except Exception:
+                        pass
+            text = "".join(parts).strip()
+            if text:
+                return text
+        except Exception:
+            pass  # fall back to the buffered path below
 
     last_exc = None
     for attempt in range(_MAX_ATTEMPTS):

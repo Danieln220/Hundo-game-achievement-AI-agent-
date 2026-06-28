@@ -26,9 +26,17 @@ import builtins as _builtins
 
 import pandas as pd
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")  # non-interactive backend — no display needed
-import matplotlib.pyplot as plt
+
+# Read the user code up front so we can SKIP the heavy matplotlib import on the
+# common path: analysis queries never chart in the sandbox (charts are a separate
+# pass), and importing matplotlib on a throttled CPU costs several seconds.
+code = sys.stdin.read()
+matplotlib = None
+plt = None
+if "plt" in code or "matplotlib" in code:
+    import matplotlib
+    matplotlib.use("Agg")  # non-interactive backend — no display needed
+    import matplotlib.pyplot as plt
 
 # Load the frozen snapshot — fast, just reads cached JSON
 from data_layer.snapshot import load_frames
@@ -100,8 +108,6 @@ _ns = {
     "achievements":   frames["achievements"],
     "player_unlocks": frames["player_unlocks"],
 }
-
-code = sys.stdin.read()
 
 try:
     exec(code, _ns)  # noqa: S102

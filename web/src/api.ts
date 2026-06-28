@@ -80,7 +80,8 @@ export async function askStream(
   steam_id: string,
   history: Turn[],
   onProgress: (node: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onToken?: (text: string) => void
 ): Promise<AskResult> {
   const res = await fetch(BASE + "/ask/stream", {
     method: "POST",
@@ -113,6 +114,7 @@ export async function askStream(
       if (!data) continue;
       const parsed = JSON.parse(data);
       if (event === "progress") onProgress(parsed.node);
+      else if (event === "token") onToken?.(parsed.text);
       else if (event === "result") result = parsed;
     }
   }
