@@ -157,6 +157,26 @@ button:disabled { opacity: 0.4; cursor: default; }
 .gate h2 { font-size: 30px; margin-bottom: 10px; line-height: 1.15; }
 .gate-row { display: flex; gap: 9px; margin: 22px 0 8px; }
 .gate-row input { flex: 1; }
+
+/* "or" divider + Steam sign-in button */
+.gate-or {
+  display: flex; align-items: center; gap: 12px;
+  color: var(--ink-faint); font-size: 12px; text-transform: uppercase;
+  letter-spacing: 1px; margin: 16px 0;
+}
+.gate-or::before, .gate-or::after {
+  content: ""; flex: 1; height: 1px; background: var(--edge);
+}
+.steam-btn {
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  width: 100%; padding: 12px 18px; border-radius: var(--r);
+  background: linear-gradient(180deg, #1b2838, #16202d);
+  border: 1px solid #2a475e; color: #c7d5e0;
+  font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 15px;
+  text-decoration: none; cursor: pointer; transition: filter 0.15s, border-color 0.15s;
+}
+.steam-btn:hover { filter: brightness(1.15); border-color: #66c0f4; color: #fff; }
+.steam-logo { font-size: 17px; }
 .hint { margin-top: 26px; text-align: left; color: var(--ink-dim); font-size: 14px; }
 .hint summary { cursor: pointer; color: var(--gold); font-family: "Chakra Petch", sans-serif; }
 .hint ul { padding-left: 18px; }

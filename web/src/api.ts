@@ -52,6 +52,10 @@ export const session = (profile: string) =>
 export const sessionStatus = (steamId: string) =>
   get<SessionStatus>(`/session/status?steam_id=${encodeURIComponent(steamId)}`);
 
+// "Sign in through Steam" (OpenID) — top-level navigation to the backend, which
+// redirects to Steam and bounces back to the app with ?steam_id=.
+export const steamLoginUrl = () => `${BASE}/auth/steam/login`;
+
 export const ask = (question: string, steam_id: string, history: Turn[]) =>
   post<AskResult>("/ask", { question, steam_id, history, with_insight: true });
 

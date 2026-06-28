@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { session, sessionStatus } from "../api";
+import { session, sessionStatus, steamLoginUrl } from "../api";
 import type { SessionResult } from "../types";
 
 const POLL_MS = 1500; // how often to poll /session/status while a snapshot builds
@@ -20,16 +20,30 @@ export default function ProfileGate({
   const cancelled = useRef(false);
   useEffect(() => () => { cancelled.current = true; }, []);
 
+  // Returning from "Sign in through Steam": the backend bounced us back with a
+  // verified ?steam_id= (or ?login_error=1). Auto-load it, then clean the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sid = params.get("steam_id");
+    if (params.get("login_error")) setError("Steam sign-in failed — try again or enter your ID.");
+    if (sid || params.get("login_error")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    if (sid) load(sid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  async function load() {
-    if (!value.trim() || loading) return;
+  async function load(profile?: string) {
+    const p = (profile ?? value).trim();
+    if (!p || loading) return;
     cancelled.current = false;
     setLoading(true);
     setError(null);
     setProgress(null);
     try {
-      const r = await session(value.trim());
+      const r = await session(p);
       if (r.status === "ready") {
         onLoaded(r); // cached snapshot — straight in
         return;
@@ -77,10 +91,16 @@ export default function ProfileGate({
           disabled={loading}
           autoFocus
         />
-        <button onClick={load} disabled={loading || !value.trim()}>
+        <button onClick={() => load()} disabled={loading || !value.trim()}>
           {loading ? "Loading…" : "Load my data"}
         </button>
       </div>
+
+      <div className="gate-or"><span>or</span></div>
+
+      <a className="steam-btn" href={steamLoginUrl()} aria-disabled={loading}>
+        <span className="steam-logo">🎮</span> Sign in through Steam
+      </a>
 
       {loading && (
         <div className="gate-progress">

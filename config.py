@@ -27,6 +27,15 @@ DEEPSEEK_MODEL_FLASH = os.environ.get("DEEPSEEK_MODEL_FLASH", "deepseek-v4-flash
 # Default "*" for local dev; tighten to the frontend's domain in production.
 CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 
+# Steam OpenID sign-in (convenience). PUBLIC_API_URL is this API's own public base
+# (used for the OpenID return_to/realm — required because behind a proxy FastAPI
+# otherwise sees http). FRONTEND_URL is where we send the user back after login.
+PUBLIC_API_URL = os.environ.get("PUBLIC_API_URL", "http://localhost:8000").rstrip("/")
+FRONTEND_URL = (
+    os.environ.get("FRONTEND_URL")
+    or (CORS_ORIGINS[0] if CORS_ORIGINS and CORS_ORIGINS[0] != "*" else "http://localhost:5173")
+).rstrip("/")
+
 MAX_RETRIES = 3            # bound the self-correction loop (total code attempts)
 # Hard timeout for sandboxed code. Env-overridable: on a throttled host (e.g.
 # Render free tier = 0.1 CPU) matplotlib chart rendering can exceed 10s — bump

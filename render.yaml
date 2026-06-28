@@ -32,6 +32,9 @@ services:
       # ── Wiring (set after the Vercel frontend exists) ──
       - key: CORS_ORIGINS         # e.g. https://hundo.vercel.app
         sync: false
+      - key: PUBLIC_API_URL       # this service's own URL, e.g. https://hundo-api.onrender.com
+        sync: false               # required for Steam OpenID return_to (proxy hides https otherwise)
+      # FRONTEND_URL is optional — defaults to the first CORS_ORIGINS entry.
       # ── Optional overrides ──
       - key: STEAM_ID             # default profile; per-request resolution makes this optional
         sync: false

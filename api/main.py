@@ -8,19 +8,22 @@ Run locally:
 Then open http://localhost:8000/docs for the auto-generated API.
 """
 import json
+import re
+import urllib.parse
 from pathlib import Path
 from typing import Optional
 
+import requests
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import (
     CORS_ORIGINS, CHART_TTL_HOURS, CHART_MAX_FILES, missing_secrets,
     RATE_LIMIT_ASK_PER_MIN, RATE_LIMIT_ASK_PER_DAY, RATE_LIMIT_SESSION_PER_MIN,
-    SNAPSHOT_TTL_DAYS,
+    SNAPSHOT_TTL_DAYS, PUBLIC_API_URL, FRONTEND_URL,
 )
 from agent import run, run_stream, make_chart
 from data_layer import steam_client
@@ -193,6 +196,48 @@ def health(request: Request, debug: int = 0):
                 redis_ok = False
         out.update(redis=cache.using_redis(), redis_ok=redis_ok, client_ip=_client_ip(request))
     return out
+
+
+# ── Steam sign-in (OpenID 2.0, convenience) ───────────────────────────────────
+# Identity only — proves the SteamID64, grants no API scope (private profiles still
+# return nothing). We pass the VERIFIED id back to the frontend via ?steam_id= and
+# it auto-loads; manual ID entry still works. No sessions/cookies (data is public).
+_STEAM_OPENID = "https://steamcommunity.com/openid/login"
+_STEAMID_RE = re.compile(r"https?://steamcommunity\.com/openid/id/(\d+)")
+
+
+@app.get("/auth/steam/login")
+def steam_login():
+    """Redirect the browser to Steam's OpenID sign-in page."""
+    params = {
+        "openid.ns": "http://specs.openid.net/auth/2.0",
+        "openid.mode": "checkid_setup",
+        "openid.return_to": f"{PUBLIC_API_URL}/auth/steam/return",
+        "openid.realm": PUBLIC_API_URL,
+        "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
+        "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
+    }
+    return RedirectResponse(f"{_STEAM_OPENID}?{urllib.parse.urlencode(params)}")
+
+
+@app.get("/auth/steam/return")
+def steam_return(request: Request):
+    """Steam redirects here after sign-in. Verify the response with Steam, extract
+    the SteamID64, and bounce back to the frontend with ?steam_id= (or ?login_error=1)."""
+    # Echo the params back to Steam with mode=check_authentication to verify.
+    params = dict(request.query_params)
+    params["openid.mode"] = "check_authentication"
+    steam_id = None
+    try:
+        r = requests.post(_STEAM_OPENID, data=params, timeout=15)
+        if "is_valid:true" in r.text:
+            m = _STEAMID_RE.search(request.query_params.get("openid.claimed_id", ""))
+            steam_id = m.group(1) if m else None
+    except requests.RequestException:
+        steam_id = None
+    if steam_id:
+        return RedirectResponse(f"{FRONTEND_URL}/?steam_id={steam_id}")
+    return RedirectResponse(f"{FRONTEND_URL}/?login_error=1")
 
 
 # ── Async snapshot build (Step 15.4) ──────────────────────────────────────────

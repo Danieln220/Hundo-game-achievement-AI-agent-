@@ -15,7 +15,7 @@ const CATEGORIES: { label: string; icon: string; chips: string[] }[] = [
     label: "Plan",
     icon: "🗺️",
     chips: [
-      "Build me a roadmap to 100% Rocket League",
+      "Build me a roadmap to 100%",
       "What should I play next?",
       "Show me cross-game easy wins",
     ],
