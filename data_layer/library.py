@@ -64,7 +64,7 @@ def build_library(steam_id: str) -> dict:
     def _ach(row) -> dict:
         return {
             "name": row.display_name or row.api_name,
-            "desc": "" if row.hidden and not row.achieved else (row.description or ""),
+            "desc": row.description or "",  # show real descriptions (completion tool — spoilers welcome)
             "game": gname.get(row.appid, str(row.appid)),
             "icon": icons.get((row.appid, row.api_name), ""),
             "pct": _pct(row.rarity_pct),

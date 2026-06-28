@@ -182,6 +182,7 @@ export default function RoadmapView({ steamId, library, initialGame, onClose }: 
                         <input type="checkbox" className="rm-check" checked={done} onChange={() => toggleCheck(a.name)} />
                         <button onClick={() => flip(expanded, a.name, setExpanded)} style={{ flex: 1, minWidth: 0, textAlign: "left", background: "none", border: "none", cursor: "pointer", color: done ? C.inkFaint : C.ink, fontFamily: FONT_HEAD, fontWeight: 500, fontSize: 13.5, textDecoration: done ? "line-through" : "none", display: "flex", alignItems: "center", gap: 7 }}>
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</span>
+                          {a.hidden && <span style={{ fontFamily: FONT_MONO, fontSize: 9.5, color: C.inkFaint, border: `1px solid ${C.edge}`, borderRadius: 999, padding: "0 6px", flex: "none" }}>🔒 hidden</span>}
                           {a.missable && <span style={{ fontFamily: FONT_MONO, fontSize: 9.5, color: C.gold, border: `1px solid ${C.goldLo}`, borderRadius: 999, padding: "0 6px", flex: "none" }}>⚠ missable</span>}
                         </button>
                         <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, fontWeight: 700, color: tcol, border: `1px solid ${tcol}`, borderRadius: 999, padding: "1px 7px", flex: "none" }}>{pctLabel(a.rarity_pct)}</span>
@@ -189,7 +190,9 @@ export default function RoadmapView({ steamId, library, initialGame, onClose }: 
                       </div>
                       {isOpen && (
                         <div style={{ padding: "0 4px 12px 31px" }}>
-                          {a.description && !a.hidden && <p style={{ color: C.inkDim, fontSize: 13, lineHeight: 1.5, margin: "0 0 10px" }}>{a.description}</p>}
+                          {a.description
+                            ? <p style={{ color: C.inkDim, fontSize: 13, lineHeight: 1.5, margin: "0 0 10px" }}>{a.description}</p>
+                            : a.hidden && <p style={{ color: C.inkFaint, fontSize: 13, lineHeight: 1.5, margin: "0 0 10px", fontStyle: "italic" }}>🔒 Hidden — Steam doesn't publish its steps; load a guide below.</p>}
                           {!guide && <button onClick={() => loadGuide(a)} style={guideBtn}>↗ Load a guide</button>}
                           {guide?.loading && <div style={{ color: C.gold, fontFamily: FONT_MONO, fontSize: 12.5, display: "flex", gap: 8, alignItems: "center" }}><span className="spinner" /> finding a guide…</div>}
                           {guide?.answer && (

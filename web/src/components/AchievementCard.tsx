@@ -73,9 +73,9 @@ export default function AchievementCard({ card, onClick, onGame }: {
           style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 10, display: "block", filter: locked ? "saturate(.75)" : "none" }} />
       </div>
       <div style={{ minWidth: 0, flex: 1, position: "relative", zIndex: 1 }}>
-        <div style={nameStyle}>{card.hidden && locked ? "Hidden achievement" : card.name}</div>
+        <div style={nameStyle}>{card.name}</div>
         <p style={{ color: C.inkDim, fontSize: 12.5, margin: "3px 0 0", lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-          {card.hidden && locked ? "Unlock to reveal." : card.desc}
+          {card.desc || (card.hidden ? "🔒 Hidden — its steps aren't on Steam" : "")}
         </p>
         <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 10 }}>
           <span style={chipStyle}>{pctLabel(card.pct)}</span>

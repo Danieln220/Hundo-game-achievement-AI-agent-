@@ -391,7 +391,7 @@ function CardModal({ card, onClose, onAsk, onGame }: { card: Card; onClose: () =
             <button onClick={onGame} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: C.inkDim, fontSize: 13, marginTop: 3 }}>{card.game} ↗</button>
           </div>
         </div>
-        <p style={{ color: C.ink, fontSize: 14, lineHeight: 1.55, margin: "16px 0" }}>{card.desc || "No description."}</p>
+        <p style={{ color: C.ink, fontSize: 14, lineHeight: 1.55, margin: "16px 0" }}>{card.desc || (card.hidden ? "🔒 Hidden achievement — Steam doesn't publish its steps. Ask the curator below for a guide." : "No description.")}</p>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
           <span style={isUltra ? { fontFamily: FONT_MONO, fontSize: 12, padding: "2px 9px", borderRadius: 999, border: `1px solid ${C.ua}`, ...HOLO } : { fontFamily: FONT_MONO, fontSize: 12, fontWeight: 700, padding: "2px 9px", borderRadius: 999, border: `1px solid ${tcol}`, color: tcol }}>{pctLabel(card.pct)}</span>
           <span style={{ fontFamily: FONT_MONO, fontSize: 12.5, color: card.achieved ? C.gold : C.inkDim }}>
@@ -433,8 +433,8 @@ function GameModal({ g, onClose, onRoadmap, onCard }: { g: LibGame; onClose: () 
                 <div key={i} onClick={() => clickable && onCard(a)} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 9px", borderRadius: 9, background: C.case, border: `1px solid ${C.edge}`, opacity: a.achieved ? 1 : 0.62, cursor: clickable ? "pointer" : "default" }}>
                   <img src={a.icon} alt="" onError={onImgError} style={{ width: 34, height: 34, borderRadius: 7, objectFit: "cover", flex: "none", filter: a.achieved ? "none" : "saturate(.7)" }} />
                   <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontFamily: FONT_HEAD, fontWeight: 600, fontSize: 13 }}>{a.hidden && !a.achieved ? "Hidden achievement" : a.name}</div>
-                    <div style={{ color: C.inkDim, fontSize: 12, lineHeight: 1.4 }}>{a.hidden && !a.achieved ? "Unlock to reveal." : a.desc}</div>
+                    <div style={{ fontFamily: FONT_HEAD, fontWeight: 600, fontSize: 13 }}>{a.name}{a.hidden ? " 🔒" : ""}</div>
+                    <div style={{ color: C.inkDim, fontSize: 12, lineHeight: 1.4 }}>{a.desc || (a.hidden ? "🔒 Hidden — open it for a guide" : "")}</div>
                   </div>
                   <span style={{ fontFamily: FONT_MONO, fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 999, border: `1px solid ${col}`, color: col, whiteSpace: "nowrap" }}>{pctLabel(a.pct)}</span>
                 </div>

@@ -1030,7 +1030,7 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
         for a in items[:_ROADMAP_TIER_LIMIT]:
             r = _rarity(a)
             pct = f"{r:.0f}% have it" if r is not None else "rarity unknown"
-            desc = "" if a.get("hidden") else (a.get("description") or "").strip()
+            desc = (a.get("description") or "").strip()
             desc = f" — {desc}" if desc else ""
             lines.append(f"- **{a['name']}** ({pct}){desc}")
         if len(items) > _ROADMAP_TIER_LIMIT:
