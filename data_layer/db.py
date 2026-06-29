@@ -51,13 +51,19 @@ create table if not exists query_log (
   latency_ms int,
   created_at timestamptz not null default now()
 );
+create table if not exists user_memory (
+  steam_id   text primary key references steam_user(steam_id) on delete cascade,
+  memory     text,                                  -- evolving per-user summary (~8 bullets)
+  updated_at timestamptz not null default now()
+);
 
 -- Lock the tables down. Supabase auto-exposes public-schema tables over its REST
 -- API (reachable with the public anon key); RLS ON + NO policies = default-deny
 -- for anon while our server's service_role key bypasses RLS and keeps full access.
-alter table steam_user enable row level security;
-alter table snapshot   enable row level security;
-alter table query_log  enable row level security;
+alter table steam_user  enable row level security;
+alter table snapshot    enable row level security;
+alter table query_log   enable row level security;
+alter table user_memory enable row level security;
 """
 
 
@@ -141,6 +147,46 @@ def log_query(steam_id: str | None, question: str, route: str | None,
         "route": route,
         "latency_ms": latency_ms,
     })
+
+
+def get_memory(steam_id: str) -> str:
+    """The user's evolving memory summary (''  if none / DB off). Best-effort."""
+    if not using_db():
+        return ""
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/user_memory",
+            params={"steam_id": f"eq.{steam_id}", "select": "memory"},
+            headers=_headers(),
+            timeout=_TIMEOUT,
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return (rows[0].get("memory") or "") if rows else ""
+    except (requests.RequestException, ValueError, KeyError, IndexError):
+        return ""
+
+
+def save_memory(steam_id: str, memory: str) -> None:
+    """Upsert the user's memory summary. Best-effort."""
+    _post("user_memory",
+          {"steam_id": str(steam_id), "memory": memory, "updated_at": _now()},
+          upsert_on="steam_id")
+
+
+def delete_memory(steam_id: str) -> None:
+    """Wipe a user's memory (the 'Clear' control). Best-effort."""
+    if not using_db():
+        return
+    try:
+        requests.delete(
+            f"{SUPABASE_URL}/rest/v1/user_memory",
+            params={"steam_id": f"eq.{steam_id}"},
+            headers=_headers("return=minimal"),
+            timeout=_TIMEOUT,
+        )
+    except requests.RequestException:
+        pass
 
 
 def stale_snapshots(cutoff_iso: str) -> list[str]:

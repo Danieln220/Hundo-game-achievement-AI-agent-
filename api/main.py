@@ -25,7 +25,7 @@ from config import (
     RATE_LIMIT_ASK_PER_MIN, RATE_LIMIT_ASK_PER_DAY, RATE_LIMIT_SESSION_PER_MIN,
     SNAPSHOT_TTL_DAYS, PUBLIC_API_URL, FRONTEND_URL,
 )
-from agent import run, run_stream, make_chart
+from agent import run, run_stream, make_chart, distill_memory
 from data_layer import steam_client
 from data_layer import storage
 from data_layer import cache
@@ -413,20 +413,59 @@ def session_status(steam_id: str):
     return {"status": "building", "progress": {"done": done, "total": total, "pct": pct}}
 
 
+# ── Cross-session memory (Tier 2) ─────────────────────────────────────────────
+# A per-user memory summary the agent remembers across visits. Loaded before each
+# /ask and woven into the prompts; updated in the BACKGROUND afterwards (a cheap
+# Flash merge) so it never adds latency. No-op without the DB.
+
+def _memory_for(steam_id: Optional[str]) -> str:
+    return db.get_memory(steam_id) if (steam_id and db.using_db()) else ""
+
+
+def _update_memory_bg(steam_id: Optional[str], question: str, answer: Optional[str], current: str) -> None:
+    """Distill + save the user's memory off the request path. Best-effort."""
+    if not (steam_id and answer and db.using_db()):
+        return
+    def work():
+        try:
+            updated = distill_memory(current, question, answer)
+            if updated and updated.strip() != (current or "").strip():
+                db.save_memory(steam_id, updated)
+        except Exception:
+            pass
+    threading.Thread(target=work, daemon=True).start()
+
+
+@app.get("/memory")
+def memory_get(steam_id: str):
+    """What the agent remembers about this user (for transparency)."""
+    return {"memory": db.get_memory(steam_id)}
+
+
+@app.delete("/memory")
+def memory_delete(steam_id: str):
+    """Wipe this user's remembered memory."""
+    db.delete_memory(steam_id)
+    return {"ok": True}
+
+
 @app.post("/ask")
 def ask(req: AskReq):
     """Answer a question. Returns the agent result (answer, route, trace fields,
     chart_url or chart_pending). For chart_pending answers, the client then calls
     /chart with this same result (answer-first UX)."""
     t0 = time.perf_counter()
+    mem = _memory_for(req.steam_id)
     result = run(
         req.question,
         steam_id=req.steam_id,
         history=req.history,
         with_insight=req.with_insight,
+        memory=mem,
     )
     db.log_query(req.steam_id, req.question, result.get("route"),
                  int((time.perf_counter() - t0) * 1000))
+    _update_memory_bg(req.steam_id, req.question, result.get("answer"), mem)
     return _serialize(result)
 
 
@@ -441,11 +480,13 @@ def ask_stream(req: AskReq):
     The client reads this as a stream (fetch + ReadableStream)."""
     def gen():
         t0 = time.perf_counter()
+        mem = _memory_for(req.steam_id)
         for kind, payload in run_stream(
             req.question,
             steam_id=req.steam_id,
             history=req.history,
             with_insight=req.with_insight,
+            memory=mem,
         ):
             if kind == "progress":
                 yield _sse("progress", {"node": payload})
@@ -454,6 +495,7 @@ def ask_stream(req: AskReq):
             else:
                 db.log_query(req.steam_id, req.question, payload.get("route"),
                              int((time.perf_counter() - t0) * 1000))
+                _update_memory_bg(req.steam_id, req.question, payload.get("answer"), mem)
                 yield _sse("result", _serialize(payload))
 
     return StreamingResponse(gen(), media_type="text/event-stream")

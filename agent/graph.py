@@ -55,6 +55,7 @@ class AgentState(TypedDict, total=False):
     chart_path: Optional[str]
     done: bool
     _token_sink: Optional[object]      # run-only callable(token) for live answer streaming
+    memory: Optional[str]              # cross-session per-user memory summary (API path only)
 
 
 # ── System prompts ────────────────────────────────────────────────────────────
@@ -323,6 +324,17 @@ def _format_history(state: AgentState, limit: int = 4) -> str:
     return "Conversation so far:\n" + "\n".join(lines) + "\n\n" if lines else ""
 
 
+def _memory_line(state: AgentState) -> str:
+    """Render the cross-session user memory for prompt injection (API path only)."""
+    mem = (state.get("memory") or "").strip()
+    if not mem:
+        return ""
+    return (
+        "What you remember about THIS user (use it to tailor the answer and resolve "
+        f"vague references like 'my usual game'; don't over-apply it):\n{mem}\n\n"
+    )
+
+
 _COLUMN_NOTES: dict[str, dict[str, str]] = {
     "games": {
         "appid":    "Steam application ID (join key)",
@@ -427,6 +439,7 @@ def plan_code_node(state: AgentState) -> AgentState:
         f"Today's date is {date.today().isoformat()}. Unlock dates on or before today are valid "
         "and recent — never treat a date in 2026 as a 'future date' or data error.\n\n"
         f"Schema:\n{state['schema']}\n\n"
+        f"{_memory_line(state)}"
         f"{_format_history(state)}"
         f"{error_context}\n"
         f"Question: {state['question']}"
@@ -1277,6 +1290,7 @@ def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSt
         f"Today's date is {date.today().isoformat()}. Dates in 2026 on or before today are recent "
         "and valid — do NOT call them 'future dates' or data errors.\n\n"
         f"Question: {state['question']}\n\n"
+        f"{_memory_line(state)}"
         f"{interp_line}"
         f"Computed result:\n{state['last_result']}\n\n"
         "Write a clear, concise natural-language answer."

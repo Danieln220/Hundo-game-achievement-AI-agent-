@@ -65,6 +65,14 @@ export const getLibrary = (steamId: string) =>
 export const getPopular = (steamId: string) =>
   get<{ games: { appid: number; name: string }[] }>(`/popular?steam_id=${encodeURIComponent(steamId)}`);
 
+// Cross-session memory (Tier 2): what the agent remembers + a clear control.
+export const getMemory = (steamId: string) =>
+  get<{ memory: string }>(`/memory?steam_id=${encodeURIComponent(steamId)}`);
+
+export async function clearMemory(steamId: string): Promise<void> {
+  await fetch(`${BASE}/memory?steam_id=${encodeURIComponent(steamId)}`, { method: "DELETE" });
+}
+
 export const ask = (question: string, steam_id: string, history: Turn[]) =>
   post<AskResult>("/ask", { question, steam_id, history, with_insight: true });
 

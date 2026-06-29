@@ -43,11 +43,39 @@ def _smalltalk_reply(question: str) -> Optional[str]:
     return None if _DATA_TOKEN in resp else resp
 
 
+_MEMORY_SYSTEM = (
+    "You maintain a SHORT memory of a Steam achievement-hunter, to personalize future help.\n"
+    "Given the CURRENT memory and the latest exchange, return the UPDATED memory.\n"
+    "Keep ONLY durable, useful facts: stated goals (e.g. '100% Hollow Knight'), strong "
+    "preferences (e.g. 'avoids multiplayer', 'likes short games'), favorite genres/games, and "
+    "skill/availability hints. DROP one-off question details and anything transient.\n"
+    "Format: up to 8 short '- ' bullets, most important first. If nothing durable is worth "
+    "adding or changing, return the current memory UNCHANGED. Output ONLY the bullet list."
+)
+
+
+def distill_memory(current: str, question: str, answer: str) -> str:
+    """LLM-merge any durable new fact from the latest exchange into the user's memory
+    summary. Returns the updated memory (capped), or the current one on failure.
+    Pure (no storage) — the API reads/saves around it."""
+    try:
+        prompt = (
+            f"Current memory:\n{current or '(empty)'}\n\n"
+            f"Latest exchange:\nUser: {question}\nAssistant: {answer}\n\n"
+            "Return the updated memory."
+        )
+        out = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_MEMORY_SYSTEM).strip()
+        return (out or current)[:1500]
+    except Exception:
+        return current
+
+
 def run(
     question: str,
     steam_id: Optional[str] = None,
     history: Optional[list[dict]] = None,
     with_insight: bool = False,
+    memory: Optional[str] = None,
 ) -> dict:
     """Load a user's cached Steam snapshot, build the graph, answer the question.
 
@@ -85,6 +113,7 @@ def run(
         "steam_id": steam_id,
         "history": history or [],
         "with_insight": with_insight,
+        "memory": memory,
         "retries": 0,
     })
 
@@ -94,6 +123,7 @@ def run_stream(
     steam_id: Optional[str] = None,
     history: Optional[list[dict]] = None,
     with_insight: bool = False,
+    memory: Optional[str] = None,
 ):
     """Streaming variant of run() for live progress. Yields ("progress", node_name)
     as each graph node fires, then ("result", final_state) at the end. The fast
@@ -128,6 +158,7 @@ def run_stream(
         "steam_id": steam_id,
         "history": history or [],
         "with_insight": with_insight,
+        "memory": memory,
         "retries": 0,
         "_token_sink": lambda tok: q.put(("token", tok)),
     }
