@@ -660,6 +660,15 @@ button:disabled { opacity: 0.4; cursor: default; }
 .curator-body .chat { flex: 1; min-height: 0; }
 .curator-body .messages { padding: 16px 0; }
 
+/* curator "back to suggestions" reset */
+.chat-reset-row { display: flex; justify-content: center; padding: 10px 0 2px; }
+.chat-reset {
+  background: var(--case-2); color: var(--ink-dim); border: 1px solid var(--edge);
+  border-radius: 999px; padding: 5px 13px; font-size: 12.5px; cursor: pointer;
+  font-family: "Chakra Petch", sans-serif; transition: color .15s, border-color .15s;
+}
+.chat-reset:hover { color: var(--gold); border-color: var(--gold-lo); }
+
 /* live answer streaming (tokens before the final rendered message) */
 .streaming { font-size: 15px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .stream-caret {

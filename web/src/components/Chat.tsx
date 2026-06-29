@@ -25,11 +25,15 @@ export default function Chat({
   inject,
   greeting,
   starters,
+  active = true,
 }: {
   steamId: string;
   games: number;
   // External question to auto-send (e.g. from the trophy case). Bump `nonce` to fire.
   inject?: { q: string; nonce: number };
+  // False while the host (curator drawer) is closed — suppresses autofocus so the
+  // off-screen textarea doesn't steal focus / scroll the page.
+  active?: boolean;
   // Optional opening line + a minimal set of starter chips (curator drawer). When
   // omitted, falls back to the full categorized SuggestionChips. A chip with `q`
   // sends immediately; a chip with `fill` PREFILLS the composer (a prebuilt
@@ -61,11 +65,11 @@ export default function Chat({
       const q = pendingRef.current;
       pendingRef.current = null;
       send(q);
-    } else {
+    } else if (active) {
       inputRef.current?.focus();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy]);
+  }, [busy, active]);
 
   // Auto-send an externally injected question (trophy-case actions).
   useEffect(() => {
@@ -95,6 +99,16 @@ export default function Chat({
 
   function stop() {
     abortRef.current?.abort();
+  }
+
+  // Clear the conversation → back to the greeting + starter suggestions.
+  function resetChat() {
+    abortRef.current?.abort();
+    pendingRef.current = null;
+    setMessages([]);
+    setStreamingText("");
+    setProgress([]);
+    setInput("");
   }
 
   // Prefill the composer with a prebuilt question and focus it (cursor at the end,
@@ -187,6 +201,11 @@ export default function Chat({
 
   return (
     <div className="chat">
+      {messages.length > 0 && (
+        <div className="chat-reset-row">
+          <button className="chat-reset" onClick={resetChat}>↺ Back to suggestions</button>
+        </div>
+      )}
       <div className="messages">
         {messages.length === 0 && (
           greeting ? (

@@ -38,11 +38,12 @@ export default function CuratorDrawer({ open, onClose, steamId, games, inject, g
           </div>
           <button onClick={onClose} style={{ display: "grid", placeItems: "center", padding: 0, lineHeight: 1, background: "transparent", border: `1px solid ${C.edge}`, color: C.inkDim, borderRadius: 9, width: 32, height: 32, cursor: "pointer", fontSize: 15 }}>✕</button>
         </div>
-        {open && (
-          <div className="curator-body" style={{ flex: 1, minHeight: 0, display: "flex", padding: "0 16px" }}>
-            <Chat steamId={steamId} games={games} inject={inject} greeting={greeting} starters={starters} />
-          </div>
-        )}
+        {/* Kept MOUNTED across open/close so the conversation persists and the
+            injected question isn't re-fired on every reopen (remount would re-run
+            Chat's inject effect). The drawer just slides off-screen when closed. */}
+        <div className="curator-body" style={{ flex: 1, minHeight: 0, display: "flex", padding: "0 16px" }}>
+          <Chat steamId={steamId} games={games} inject={inject} greeting={greeting} starters={starters} active={open} />
+        </div>
       </aside>
     </>
   );
