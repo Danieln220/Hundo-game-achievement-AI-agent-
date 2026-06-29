@@ -22,6 +22,9 @@ loop, and a clean path from local prototype to a deployed multi-user app.
 - **Profile audit** — one request runs a battery of analyses into one report.
 - **How-to + time-to-complete** — web-searched guides with numbered sources.
 - **Easy wins / what to play next / rarest-flex / stuck detector.**
+- **Remembers you** — cross-session memory: it learns your goals and preferences
+  (e.g. "chasing 100% Hollow Knight", "skips multiplayer") across visits and tailors
+  answers accordingly. View or clear it anytime.
 - **Watch mode** — a live worker that reacts as you unlock achievements.
 - **Self-correction, ambiguity handling, multi-turn memory, streaming progress.**
 
