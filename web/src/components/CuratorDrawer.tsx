@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Chat from "./Chat";
 import { getMemory, clearMemory } from "../api";
 import { C } from "../tcTheme";
@@ -15,6 +15,14 @@ export default function CuratorDrawer({ open, onClose, steamId, games, inject, g
 }) {
   const [memOpen, setMemOpen] = useState(false);
   const [mem, setMem] = useState<string | null>(null);
+  const asideRef = useRef<HTMLElement>(null);
+
+  // aria-hidden alone still leaves the off-screen drawer tabbable — `inert`
+  // removes it from both the tab order and the accessibility tree while closed.
+  // (Set via ref: React 18's typings don't know the inert prop yet.)
+  useEffect(() => {
+    if (asideRef.current) asideRef.current.inert = !open;
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -36,7 +44,7 @@ export default function CuratorDrawer({ open, onClose, steamId, games, inject, g
   return (
     <>
       {open && <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 45, background: "rgba(5,7,12,.55)", backdropFilter: "blur(2px)" }} />}
-      <aside style={{
+      <aside ref={asideRef} style={{
         position: "fixed", top: 0, right: 0, height: "100%", width: "min(420px,92vw)", zIndex: 46,
         display: "flex", flexDirection: "column", background: "linear-gradient(180deg,#0e111a,#0a0c12)",
         borderLeft: `1px solid ${C.edge}`, boxShadow: "-24px 0 60px -20px rgba(0,0,0,.7)",

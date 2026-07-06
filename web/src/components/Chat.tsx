@@ -52,6 +52,9 @@ export default function Chat({
   // A follow-up typed while the agent is busy is queued here and auto-sent when
   // the current answer finishes (one request at a time).
   const pendingRef = useRef<string | null>(null);
+  // Bumped by resetChat; an in-flight send() compares its captured value and
+  // discards its result/error instead of appending to the freshly cleared list.
+  const resetSeq = useRef(0);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -90,7 +93,9 @@ export default function Chat({
     for (let i = 0; i < msgs.length; i++) {
       const m = msgs[i];
       const next = msgs[i + 1];
-      if (m.role === "user" && next?.role === "assistant") {
+      // Skip error/stopped turns (retryQuestion set) — "⚠️ …" / "⏹ Stopped."
+      // aren't real answers and only pollute the agent's multi-turn context.
+      if (m.role === "user" && next?.role === "assistant" && !next.retryQuestion) {
         turns.push({ question: m.text, answer: next.result.answer || "" });
       }
     }
@@ -103,6 +108,7 @@ export default function Chat({
 
   // Clear the conversation → back to the greeting + starter suggestions.
   function resetChat() {
+    resetSeq.current += 1; // invalidate any in-flight send()
     abortRef.current?.abort();
     pendingRef.current = null;
     setMessages([]);
@@ -133,6 +139,7 @@ export default function Chat({
     const assistantIndex = messages.length + 1; // user pushed, then assistant
     const controller = new AbortController();
     abortRef.current = controller;
+    const seq = resetSeq.current; // stale once resetChat() runs
 
     setMessages((m) => [...m, { role: "user", text: q }]);
     setInput("");
@@ -149,6 +156,7 @@ export default function Chat({
         controller.signal,
         (tok) => setStreamingText((s) => s + tok)
       );
+      if (resetSeq.current !== seq) return; // chat was reset mid-request
       setStreamingText("");
       setMessages((m) => [
         ...m,
@@ -182,6 +190,7 @@ export default function Chat({
         }
       }
     } catch (e) {
+      if (resetSeq.current !== seq) return; // reset aborted us — stay cleared
       const err = e as Error;
       const stopped = err.name === "AbortError";
       setMessages((m) => [
@@ -257,7 +266,7 @@ export default function Chat({
         if (busy || messages.length === 0) return null;
         const last = [...messages]
           .reverse()
-          .find((m): m is AssistantMsg => m.role === "assistant");
+          .find((m): m is AssistantMsg => m.role === "assistant" && !m.retryQuestion);
         const chips = followupsFor(last?.result);
         if (!chips.length) return null;
         return (

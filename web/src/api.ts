@@ -117,7 +117,9 @@ export async function askStream(
       let data = "";
       for (const line of frame.split("\n")) {
         if (line.startsWith("event:")) event = line.slice(6).trim();
-        else if (line.startsWith("data:")) data += line.slice(5).trim();
+        // Per the SSE spec, multiple data: lines in one frame join with "\n"
+        // (concatenating them corrupts any payload that spans lines).
+        else if (line.startsWith("data:")) data += (data ? "\n" : "") + line.slice(5).trim();
       }
       if (!data) continue;
       const parsed = JSON.parse(data);

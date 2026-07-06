@@ -49,10 +49,20 @@ export default function ProfileGate({
         return;
       }
       // Building in the background — poll for live progress until ready/failed.
+      // A transient poll failure (network blip, server cold start) must NOT kill
+      // the flow — the build keeps running server-side. Give up only after 4 in a row.
+      let misses = 0;
       for (;;) {
         if (cancelled.current) return;
         await sleep(POLL_MS);
-        const st = await sessionStatus(r.steam_id);
+        let st;
+        try {
+          st = await sessionStatus(r.steam_id);
+          misses = 0;
+        } catch (pollErr) {
+          if (++misses >= 4) throw pollErr;
+          continue;
+        }
         if (cancelled.current) return;
         if (st.status === "ready") {
           onLoaded(st);
@@ -98,8 +108,18 @@ export default function ProfileGate({
 
       <div className="gate-or"><span>or</span></div>
 
+      {/* Valve's official sign-in art (brand guidelines ask for it; it's also the
+          button users already trust). Styled fallback text shows if the CDN fails. */}
       <a className="steam-btn" href={steamLoginUrl()} aria-disabled={loading}>
-        <span className="steam-logo">🎮</span> Sign in through Steam
+        <img
+          src="https://community.cloudflare.steamstatic.com/public/images/signinthroughsteam/sits_01.png"
+          alt="Sign in through Steam"
+          height={35}
+          onError={(e) => {
+            e.currentTarget.style.display = "none";
+            e.currentTarget.insertAdjacentText("beforebegin", "Sign in through Steam");
+          }}
+        />
       </a>
 
       {loading && (

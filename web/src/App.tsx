@@ -1,7 +1,30 @@
-import { useState } from "react";
+import { Component, useState, type ReactNode } from "react";
 import ProfileGate from "./components/ProfileGate";
 import TrophyCase from "./components/TrophyCase";
 import type { SessionResult } from "./types";
+
+// One render error must never white-screen the whole app (it did once — the
+// unowned-roadmap pct crash). Catch, show a way back, keep the backdrop.
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div style={{ maxWidth: 460, margin: "18vh auto 0", textAlign: "center", padding: "0 20px" }}>
+        <div style={{ fontSize: 34, marginBottom: 10 }}>🏚️</div>
+        <h2 style={{ fontFamily: "'Chakra Petch',sans-serif", margin: "0 0 8px" }}>The case jammed</h2>
+        <p style={{ color: "#8a93a8", fontSize: 14, lineHeight: 1.55 }}>
+          Something broke while rendering. Your data is fine — reload to get back to your trophy case.
+        </p>
+        <button onClick={() => window.location.reload()} style={{ marginTop: 8 }}>Reload</button>
+        <pre style={{ marginTop: 18, textAlign: "left", fontSize: 11, color: "#5b6478", background: "#0e111a", border: "1px solid #262c3d", borderRadius: 8, padding: 10, overflowX: "auto" }}>
+          {String(this.state.error)}
+        </pre>
+      </div>
+    );
+  }
+}
 
 // Ambient "display case" backdrop — fixed layers lifted from the prototype:
 // gold/violet/teal radial glows, two bordered rings, vertical grid lines, a faint
@@ -25,11 +48,13 @@ export default function App() {
   return (
     <div className="app">
       <Backdrop />
-      {session ? (
-        <TrophyCase session={session} onSignOut={() => setSession(null)} />
-      ) : (
-        <ProfileGate onLoaded={setSession} />
-      )}
+      <ErrorBoundary>
+        {session ? (
+          <TrophyCase session={session} onSignOut={() => setSession(null)} />
+        ) : (
+          <ProfileGate onLoaded={setSession} />
+        )}
+      </ErrorBoundary>
     </div>
   );
 }

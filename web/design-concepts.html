@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hundo — three design directions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600&family=Spectral:ital,wght@0,500;1,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --void: #0a0c12; --case: #12151f; --case2: #1a1f2e; --edge: #262c3d; --edge-lit: #3a4a66;
+    --ink: #e8ecf4; --dim: #8a93a8; --faint: #5b6478;
+    --gold: #e8b339; --gold-lo: #a07d22;
+    --uncommon: #4fb6c9; --rare: #8b7bf0; --ua: #f0c04a; --ub: #e86ac8; --uc: #5be0d0;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--void); color: var(--ink); font-family: Inter, system-ui, sans-serif; line-height: 1.55; }
+  .mono { font-family: "JetBrains Mono", monospace; }
+
+  .intro { max-width: 880px; margin: 0 auto; padding: 56px 28px 8px; }
+  .intro h1 { font-family: "Chakra Petch", sans-serif; font-size: 30px; margin: 0 0 6px; }
+  .intro p { color: var(--dim); font-size: 15px; max-width: 640px; }
+  .kicker { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--gold); }
+
+  section.dir { max-width: 1180px; margin: 56px auto; padding: 0 28px; }
+  .dir-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; border-bottom: 2px solid var(--edge); padding-bottom: 12px; margin-bottom: 8px; }
+  .dir-head .no { font-family: "JetBrains Mono", monospace; color: var(--faint); font-size: 13px; }
+  .dir-head h2 { font-family: "Chakra Petch", sans-serif; font-size: 24px; margin: 0; }
+  .dir-head .risk { margin-left: auto; font-size: 12px; color: var(--dim); font-family: "JetBrains Mono", monospace; }
+  .rationale { color: var(--dim); font-size: 14px; max-width: 760px; margin: 10px 0 22px; }
+  .rationale b { color: var(--ink); }
+  .tokens { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 22px; }
+  .tok { display: flex; align-items: center; gap: 7px; font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--dim); background: var(--case); border: 1px solid var(--edge); border-radius: 999px; padding: 4px 11px 4px 5px; }
+  .tok i { width: 18px; height: 18px; border-radius: 50%; display: block; border: 1px solid rgba(255,255,255,.15); }
+
+  .stage { border: 1px solid var(--edge); border-radius: 18px; overflow: hidden; background: radial-gradient(1100px 500px at 50% -20%, #141a2b, var(--void) 65%); padding: 34px; }
+
+  /* ═══════════ A — THE PLACARD ═══════════ */
+  .plaque {
+    position: relative; max-width: 680px; border-radius: 12px; padding: 22px 26px 20px;
+    background: linear-gradient(175deg, #2c2413, #1c170b 55%, #241d0e);
+    border: 1px solid #4a3c17;
+    box-shadow: inset 0 1px 0 rgba(255,224,138,.25), inset 0 -1px 0 rgba(0,0,0,.5), 0 18px 40px -18px rgba(0,0,0,.8);
+  }
+  .plaque::after { /* light sweep */
+    content: ""; position: absolute; inset: 0; border-radius: 12px; pointer-events: none;
+    background: linear-gradient(105deg, transparent 42%, rgba(255,230,160,.09) 50%, transparent 58%);
+  }
+  .plaque .field { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 2.4px; text-transform: uppercase; color: #9a7f36; }
+  .plaque h3 {
+    font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 30px; margin: 4px 0 2px; color: #f3d488;
+    text-shadow: 0 1px 0 rgba(0,0,0,.9), 0 -1px 0 rgba(255,235,170,.22); letter-spacing: .5px;
+  }
+  .plaque .sub { font-family: "Spectral", serif; font-style: italic; color: #b99d55; font-size: 15px; }
+  .plaque .row { display: flex; gap: 26px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,224,138,.14); }
+  .plaque .row div { min-width: 90px; }
+  .plaque .row b { display: block; font-family: "JetBrains Mono", monospace; font-size: 17px; color: #f3d488; }
+  .plaque .row span { font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: 1.6px; text-transform: uppercase; color: #9a7f36; }
+
+  .exhibit-label { display: flex; align-items: center; gap: 12px; margin: 30px 0 14px; }
+  .exhibit-label .tag {
+    font-family: "JetBrains Mono", monospace; font-size: 10.5px; letter-spacing: 2.2px; text-transform: uppercase; color: #f3d488;
+    background: linear-gradient(175deg, #2c2413, #201a0c); border: 1px solid #4a3c17; border-radius: 6px; padding: 6px 12px;
+    box-shadow: inset 0 1px 0 rgba(255,224,138,.2);
+  }
+  .exhibit-label .line { flex: 1; height: 1px; background: var(--edge); }
+  .exhibit-label .cat { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--faint); }
+
+  .spec-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  .spec {
+    background: linear-gradient(180deg, var(--case), #0e111a); border: 1px solid var(--edge); border-radius: 12px; padding: 14px 16px;
+  }
+  .spec .field { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--faint); }
+  .spec h4 { margin: 3px 0 4px; font-family: "Chakra Petch", sans-serif; font-size: 15px; font-weight: 600; }
+  .spec .prov { font-family: "Spectral", serif; font-style: italic; font-size: 13px; color: var(--dim); }
+  .spec .meta { display: flex; justify-content: space-between; margin-top: 10px; font-family: "JetBrains Mono", monospace; font-size: 11px; }
+  .spec .meta .pct { color: var(--rare); border: 1px solid var(--rare); border-radius: 999px; padding: 0 8px; }
+  .spec .meta .date { color: var(--faint); }
+
+  /* ═══════════ B — THE BINDER ═══════════ */
+  .binder { display: flex; gap: 0; }
+  .tabs { display: flex; flex-direction: column; gap: 6px; padding-top: 26px; }
+  .tab {
+    writing-mode: vertical-rl; text-orientation: mixed; font-family: "Chakra Petch", sans-serif; font-size: 11px; font-weight: 600;
+    letter-spacing: 1px; text-transform: uppercase; padding: 12px 6px; border-radius: 8px 0 0 8px; border: 1px solid var(--edge); border-right: none;
+    color: var(--dim); background: var(--case);
+  }
+  .tab.on { color: #1a1303; background: linear-gradient(180deg, var(--ua), #c9991f); border-color: var(--gold-lo); }
+  .tab.t-rare { color: var(--rare); } .tab.t-un { color: var(--uncommon); }
+  .page {
+    flex: 1; background: linear-gradient(180deg, #151926, #10131d); border: 1px solid var(--edge-lit); border-radius: 4px 14px 14px 4px; padding: 22px;
+    box-shadow: inset 12px 0 24px -18px #000, 0 24px 50px -24px rgba(0,0,0,.9); position: relative;
+  }
+  .page::before { /* binder rings */
+    content: ""; position: absolute; left: -7px; top: 60px; bottom: 60px; width: 14px;
+    background: repeating-linear-gradient(180deg, transparent 0 44px, #3a4a66 44px 58px);
+    border-radius: 7px; opacity: .8;
+  }
+  .page-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 16px; }
+  .page-head h3 { font-family: "Chakra Petch", sans-serif; font-size: 17px; margin: 0; }
+  .page-head span { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--faint); }
+  .pockets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .pocket {
+    position: relative; border-radius: 10px; padding: 11px; background: rgba(255,255,255,.025);
+    border: 1px solid rgba(255,255,255,.09); overflow: hidden;
+  }
+  .pocket::before { /* PVC sheen — the signature */
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(118deg, transparent 30%, rgba(255,255,255,.10) 42%, rgba(255,255,255,.02) 50%, transparent 62%);
+  }
+  .pocket::after { /* pocket seam */
+    content: ""; position: absolute; left: 8%; right: 8%; top: 0; height: 7px; border-radius: 0 0 6px 6px;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08); border-top: none;
+  }
+  .pcard { border-radius: 8px; padding: 12px; background: linear-gradient(180deg, var(--case2), var(--case)); border: 1px solid var(--edge); }
+  .pcard.ultra { border: 1px solid transparent;
+    background: linear-gradient(180deg, var(--case2), var(--case)) padding-box, linear-gradient(110deg, var(--ua), var(--ub), var(--uc), var(--ua)) border-box; }
+  .pcard .ico { width: 42px; height: 42px; border-radius: 8px; background: linear-gradient(135deg, #2a3350, #171c2c); border: 1px solid var(--edge-lit); margin-bottom: 8px; display: grid; place-items: center; font-size: 20px; }
+  .pcard h4 { font-family: "Chakra Petch", sans-serif; font-size: 13.5px; margin: 0 0 2px; }
+  .pcard.ultra h4 { background: linear-gradient(110deg, var(--ua), var(--ub) 40%, var(--uc) 75%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .pcard .g { font-size: 11px; color: var(--faint); }
+  .pcard .chip { display: inline-block; margin-top: 8px; font-family: "JetBrains Mono", monospace; font-size: 10px; font-weight: 700; border-radius: 999px; padding: 1px 8px; border: 1px solid currentColor; }
+  .punchout {
+    margin-top: 16px; border: 2px dashed rgba(232,179,57,.4); border-radius: 12px; padding: 13px 16px;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  .punchout .t { font-family: "Chakra Petch", sans-serif; font-size: 13.5px; }
+  .punchout .t span { display: block; font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--faint); letter-spacing: 1px; text-transform: uppercase; margin-top: 2px; }
+  .punchout button { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 12.5px; color: #1a1303; background: linear-gradient(180deg, var(--gold), #c9991f); border: none; border-radius: 999px; padding: 8px 16px; cursor: pointer; }
+
+  /* ═══════════ C — THE DOSSIER ═══════════ */
+  .dossier { font-family: "JetBrains Mono", monospace; max-width: 760px; }
+  .file-head { display: flex; align-items: center; gap: 14px; border: 1px solid var(--edge-lit); border-radius: 10px 10px 0 0; background: var(--case); padding: 12px 18px; }
+  .file-head .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--uc); box-shadow: 0 0 10px var(--uc); animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: .4; } }
+  .file-head .fn { font-size: 12px; color: var(--dim); letter-spacing: 1px; }
+  .file-head .cls { margin-left: auto; font-size: 10px; letter-spacing: 2.4px; color: var(--gold); border: 1px solid var(--gold-lo); border-radius: 4px; padding: 2px 8px; }
+  .file-body { border: 1px solid var(--edge); border-top: none; border-radius: 0 0 10px 10px; background: #0d1017; padding: 22px 24px; position: relative; overflow: hidden; }
+  .file-body::before { /* chart-recorder grid */
+    content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .5;
+    background: repeating-linear-gradient(0deg, transparent 0 27px, rgba(79,182,201,.05) 27px 28px);
+  }
+  .q { color: var(--faint); font-size: 12px; }
+  .q b { color: var(--ink); font-weight: 400; }
+  .finding { margin: 16px 0; font-family: Inter, sans-serif; font-size: 15px; line-height: 1.6; }
+  .finding em { color: var(--gold); font-style: normal; font-weight: 600; }
+  .evidence { border-left: 3px solid var(--uncommon); background: rgba(79,182,201,.05); border-radius: 0 8px 8px 0; padding: 10px 14px; font-size: 11.5px; color: var(--dim); margin: 14px 0; }
+  .evidence .lbl { color: var(--uncommon); font-size: 9.5px; letter-spacing: 2px; text-transform: uppercase; display: block; margin-bottom: 5px; }
+  .stamp {
+    position: absolute; right: 26px; bottom: 20px; transform: rotate(-9deg);
+    font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 3px; color: #58d6a3;
+    border: 2.5px solid #58d6a3; border-radius: 6px; padding: 5px 13px; opacity: .85;
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.9'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.92'/%3E%3C/svg%3E");
+  }
+  .stamp span { display: block; font-family: "JetBrains Mono", monospace; font-size: 8.5px; letter-spacing: 1.4px; font-weight: 400; }
+  .verdict-note { margin-top: 26px; color: var(--faint); font-size: 11px; }
+
+  footer { max-width: 880px; margin: 40px auto 70px; padding: 0 28px; color: var(--faint); font-size: 12.5px; font-family: "JetBrains Mono", monospace; }
+  @media (max-width: 720px) { .pockets { grid-template-columns: 1fr 1fr; } .stage { padding: 20px; } }
+</style>
+</head>
+<body>
+
+<div class="intro">
+  <div class="kicker">Hundo · design directions · July 2026</div>
+  <h1>Three ways to sharpen the Trophy Case</h1>
+  <p>All three keep your palette, fonts, and rarity system — they differ in <b>which story the chrome tells</b>.
+  Each takes exactly one deliberate risk. Mix-and-match is allowed: A is a chrome refinement, B is a layout
+  metaphor, C is a trust language for the chat/answers.</p>
+</div>
+
+<!-- ═══════════════════ A ═══════════════════ -->
+<section class="dir">
+  <div class="dir-head">
+    <span class="no">DIRECTION 01</span>
+    <h2>The Placard</h2>
+    <span class="risk">risk: engraved-metal skeuomorphism, used sparingly</span>
+  </div>
+  <p class="rationale">Your current hero is a stats panel. A museum would never label an exhibit with a stats panel —
+  it uses an <b>engraved placard</b>: name, provenance, catalog number. This direction upgrades only the chrome
+  (hero, section headers) into etched brass with a light sweep, and rewrites labels in curator's language
+  (<b>ACQUIRED / PROVENANCE / CASE Nº</b>). Cards stay quiet so foil stays king.</p>
+  <div class="tokens">
+    <span class="tok"><i style="background:#f3d488"></i>etched brass #f3d488</span>
+    <span class="tok"><i style="background:#2c2413"></i>plaque bronze #2c2413</span>
+    <span class="tok"><i style="background:#e8b339"></i>gold (kept)</span>
+    <span class="tok"><i style="background:#0a0c12"></i>void (kept)</span>
+    <span class="tok">type: Chakra Petch · Spectral italic (provenance) · JetBrains Mono</span>
+  </div>
+  <div class="stage">
+    <div class="plaque">
+      <div class="field">Private collection · Case Nº 7656-1198-9461</div>
+      <h3>Daniel's Trophy Case</h3>
+      <div class="sub">Steam era, 2015 — present · 120 works · 4 completed to perfection</div>
+      <div class="row">
+        <div><b>2,847</b><span>Acquired</span></div>
+        <div><b>38%</b><span>To Hundo</span></div>
+        <div><b>Nº 12</b><span>Ultra-rare held</span></div>
+        <div><b>4</b><span>Perfect games</span></div>
+      </div>
+    </div>
+
+    <div class="exhibit-label">
+      <span class="tag">Exhibit 03 — Rarest Holdings</span>
+      <span class="line"></span>
+      <span class="cat">catalogued by global unlock rate</span>
+    </div>
+
+    <div class="spec-row">
+      <div class="spec">
+        <div class="field">Provenance · Hollow Knight</div>
+        <h4>Embrace the Void</h4>
+        <p class="prov">"Achieved the void ending after the Pantheon of Hallownest."</p>
+        <div class="meta"><span class="pct">1.2%</span><span class="date">acq. 2025-11-03</span></div>
+      </div>
+      <div class="spec">
+        <div class="field">Provenance · Celeste</div>
+        <h4>Farewell</h4>
+        <p class="prov">"Completed Chapter 9 — the longest goodbye."</p>
+        <div class="meta"><span class="pct" style="color:var(--rare);border-color:var(--rare)">4.7%</span><span class="date">acq. 2026-01-18</span></div>
+      </div>
+      <div class="spec">
+        <div class="field">Provenance · Elden Ring</div>
+        <h4>Legendary Armaments</h4>
+        <p class="prov">"All nine legendary weapons, gathered across the Lands Between."</p>
+        <div class="meta"><span class="pct" style="color:var(--uncommon);border-color:var(--uncommon)">8.9%</span><span class="date">acq. 2026-03-02</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ B ═══════════════════ -->
+<section class="dir">
+  <div class="dir-head">
+    <span class="no">DIRECTION 02</span>
+    <h2>The Binder</h2>
+    <span class="risk">risk: a literal physical metaphor for the whole grid</span>
+  </div>
+  <p class="rationale">Achievement hunters were card kids. This turns the case grid into a <b>9-pocket binder page</b>:
+  cards sit inside PVC sleeves (the sheen is the signature), rarity tiers become side tabs, and pagination becomes
+  page-turning. The killer synergy: the share feature is a card you <b>pull out of its sleeve</b> — the punch-out
+  strip below is the future "Hundo Card" share slot. Most playful direction; strongest on mobile.</p>
+  <div class="tokens">
+    <span class="tok"><i style="background:rgba(255,255,255,.14)"></i>PVC sheen (the signature)</span>
+    <span class="tok"><i style="background:#151926"></i>binder page #151926</span>
+    <span class="tok"><i style="background:#f0c04a"></i>holo A (kept)</span>
+    <span class="tok"><i style="background:#e86ac8"></i>holo B (kept)</span>
+    <span class="tok">type: unchanged — the metaphor does the talking</span>
+  </div>
+  <div class="stage">
+    <div class="binder">
+      <div class="tabs">
+        <span class="tab on">Ultra</span>
+        <span class="tab t-rare">Rare</span>
+        <span class="tab t-un">Uncommon</span>
+        <span class="tab">Common</span>
+      </div>
+      <div class="page">
+        <div class="page-head"><h3>Ultra-rare — Page 1 of 2</h3><span>12 cards sleeved</span></div>
+        <div class="pockets">
+          <div class="pocket"><div class="pcard ultra"><div class="ico">🕳️</div><h4>Embrace the Void</h4><div class="g">Hollow Knight</div><span class="chip" style="color:var(--ub)">1.2%</span></div></div>
+          <div class="pocket"><div class="pcard ultra"><div class="ico">🍓</div><h4>Farewell</h4><div class="g">Celeste</div><span class="chip" style="color:var(--ua)">4.7%</span></div></div>
+          <div class="pocket"><div class="pcard"><div class="ico">⚔️</div><h4>Legendary Armaments</h4><div class="g">Elden Ring</div><span class="chip" style="color:var(--rare)">8.9%</span></div></div>
+          <div class="pocket"><div class="pcard"><div class="ico">👑</div><h4>Skystrider</h4><div class="g">Hades</div><span class="chip" style="color:var(--rare)">6.4%</span></div></div>
+          <div class="pocket"><div class="pcard"><div class="ico">🏜️</div><h4>Platinum God</h4><div class="g">Isaac: Rebirth</div><span class="chip" style="color:var(--ub)">2.1%</span></div></div>
+          <div class="pocket" style="opacity:.45"><div class="pcard" style="border-style:dashed"><div class="ico" style="opacity:.4">?</div><h4 style="color:var(--faint)">Empty sleeve</h4><div class="g">next ultra goes here</div><span class="chip" style="color:var(--faint)">—</span></div></div>
+        </div>
+        <div class="punchout">
+          <div class="t">Pull a card to flex it
+            <span>renders a share image · links back to your case</span>
+          </div>
+          <button>↗ Share this page</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ C ═══════════════════ -->
+<section class="dir">
+  <div class="dir-head">
+    <span class="no">DIRECTION 03</span>
+    <h2>The Dossier</h2>
+    <span class="risk">risk: mono-first density in the chat surface</span>
+  </div>
+  <p class="rationale">A, B restyle the case; this one styles the <b>agent</b> — your actual moat. Answers become an
+  analyst's report: the question as case file, the answer in plain type, the pandas evidence one tap away, and the
+  signature — a <b>VERIFIED stamp</b> that only appears when the number was computed in the sandbox. Trophi can copy
+  a chatbot; it cannot honestly copy this stamp. This is "computed, not hallucinated" made visible.</p>
+  <div class="tokens">
+    <span class="tok"><i style="background:#58d6a3"></i>verified #58d6a3 (stamp only)</span>
+    <span class="tok"><i style="background:#4fb6c9"></i>evidence teal (kept)</span>
+    <span class="tok"><i style="background:#0d1017"></i>report paper #0d1017</span>
+    <span class="tok"><i style="background:#e8b339"></i>gold = the finding</span>
+    <span class="tok">type: JetBrains Mono chrome · Inter findings</span>
+  </div>
+  <div class="stage">
+    <div class="dossier">
+      <div class="file-head">
+        <span class="dot"></span>
+        <span class="fn">HUNDO-ANALYSIS · 2026-07-06 · steamid 7656…6245</span>
+        <span class="cls">GROUNDED</span>
+      </div>
+      <div class="file-body">
+        <div class="q">QUERY ▸ <b>"which game am I closest to 100%?"</b></div>
+        <p class="finding">You're closest in <em>Hades — 92% done</em>, with just 4 achievements left.
+        Three of them are story-gated and will land naturally; the only real chaser is
+        <em>Skystrider (6.4% rarity)</em>. Roughly one good evening.</p>
+        <div class="evidence">
+          <span class="lbl">Evidence · pandas · sandbox run #1 · 0 retries</span>
+          df.groupby("game").agg(pct=("achieved","mean")).query("pct&lt;1").sort_values("pct").tail(1)<br>
+          → Hades &nbsp;0.9167 &nbsp;(44/48 unlocked)
+        </div>
+        <div class="verdict-note">flash-verified against your snapshot · trace expandable · nothing invented</div>
+        <div class="stamp">VERIFIED<span>computed from your data</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Recommendation: C is the cheapest and most strategic (it lands in Message.tsx and becomes your brand),
+  A is the tasteful default upgrade for the case, B is the boldest bet and pairs best with the share-card feature.
+  All three respect prefers-reduced-motion and the existing token set.
+</footer>
+
+</body>
+</html>

@@ -1,19 +1,19 @@
-// The rarity system — the soul of the design. Maps a global unlock % to a tier,
-// and renders a chip. Ultra-rare (<5%) gets the holographic foil signature.
+// The rarity system — the soul of the design. The thresholds live in ONE place
+// (tcTheme.tierOf) so a 12% achievement is the same tier/color in a chat
+// roadmap card as it is in the trophy case. This module just renders the chip.
 
-export type RarityTier = "common" | "uncommon" | "rare" | "ultra" | "unknown";
+import { tierOf, pctLabel, type Tier } from "./tcTheme";
 
-export function rarityTier(pct?: number | null): RarityTier {
-  if (pct == null || Number.isNaN(pct)) return "unknown";
-  if (pct >= 50) return "common";
-  if (pct >= 15) return "uncommon";
-  if (pct >= 5) return "rare";
-  return "ultra";
+export type RarityTier = Tier | "unknown";
+
+export function rarityTier(pct?: number | string | null): RarityTier {
+  if (pct == null || Number.isNaN(Number(pct))) return "unknown";
+  return tierOf(pct);
 }
 
-export function RarityChip({ pct }: { pct?: number | null }) {
+export function RarityChip({ pct }: { pct?: number | string | null }) {
   const tier = rarityTier(pct);
-  const label = pct == null ? "—" : `${Math.round(pct)}%`;
+  const label = pctLabel(pct);
 
   if (tier === "ultra") {
     return (

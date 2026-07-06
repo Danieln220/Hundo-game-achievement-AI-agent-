@@ -5,6 +5,7 @@ import { assetUrl } from "../api";
 import type { AskResult } from "../types";
 import RoadmapCard from "./RoadmapCard";
 import AuditDashboard from "./AuditDashboard";
+import ReasoningTrace from "./ReasoningTrace";
 
 type Props =
   | { role: "user"; text: string }
@@ -96,7 +97,18 @@ export default function Message(props: Props) {
           </div>
         )}
         {chartUrl && (
-          <img className="chart" src={assetUrl(chartUrl)} alt="chart" />
+          <img
+            className="chart"
+            src={assetUrl(chartUrl)}
+            alt="chart"
+            onError={(e) => { e.currentTarget.style.display = "none"; }}
+          />
+        )}
+
+        {/* "Computed, not guessed" — the agent's plan + real code attempts,
+            collapsed by default. Only shown when the answer was computed. */}
+        {((result.code_history?.length ?? 0) > 0 || result.plan) && (
+          <ReasoningTrace result={result} />
         )}
       </div>
     </div>

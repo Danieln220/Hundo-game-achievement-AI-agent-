@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hundo — The Binder · full site concept</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ─────────────────────────────────────────────────────────────
+   HUNDO · THE BINDER — full-experience concept
+   The whole product speaks collector: cards live in sleeves,
+   locked ones are EMPTY sleeves, games are SETS, the roadmap is
+   a WANT LIST, and computed answers come back AUTHENTICATED.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --void: #0a0c12; --case: #12151f; --case2: #1a1f2e; --edge: #262c3d; --edge-lit: #3a4a66;
+  --ink: #e8ecf4; --dim: #8a93a8; --faint: #5b6478;
+  --gold: #e8b339; --gold-lo: #a07d22; --brass: #f3d488;
+  --uncommon: #4fb6c9; --rare: #8b7bf0;
+  --ua: #f0c04a; --ub: #e86ac8; --uc: #5be0d0;
+  --danger: #ef6a6a; --auth: #58d6a3;
+  --sleeve: rgba(255,255,255,.08);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--void); color: var(--ink); font-family: Inter, system-ui, sans-serif; line-height: 1.6; }
+.mono { font-family: "JetBrains Mono", monospace; }
+h1,h2,h3,h4 { font-family: "Chakra Petch", sans-serif; }
+img { max-width: 100%; }
+a { color: var(--gold); text-decoration: none; }
+
+/* ambient desk */
+.bg { position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(1200px 700px at 50% -20%, rgba(232,179,57,.13), transparent 55%),
+    radial-gradient(900px 600px at 105% 110%, rgba(139,123,240,.10), transparent 60%),
+    radial-gradient(800px 500px at -10% 105%, rgba(79,182,201,.08), transparent 60%);
+}
+.bg::after { content:""; position:absolute; inset:0; opacity:.05; mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+
+@keyframes foil { to { background-position: 240% 0; } }
+.holo-text { background: linear-gradient(110deg, var(--ua), var(--ub) 35%, var(--uc) 65%, var(--ua) 90%);
+  background-size: 240% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: foil 6s linear infinite; font-weight: 700; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ───────── top chrome ───────── */
+.nav { position: sticky; top: 0; z-index: 50; backdrop-filter: blur(10px);
+  background: rgba(10,12,18,.82); border-bottom: 1px solid var(--edge); }
+.nav-in { max-width: 1240px; margin: 0 auto; padding: 12px 28px; display: flex; align-items: center; gap: 22px; }
+.brand { display: flex; align-items: center; gap: 11px; font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 18px; }
+.brand .h { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; color: #1a1303;
+  background: linear-gradient(180deg, var(--gold), #c9991f); font-size: 15px; }
+.brand small { display: block; font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 2px; color: var(--gold); font-weight: 400; }
+.tabs { display: flex; gap: 4px; margin-left: 12px; }
+.tabs a { font-family: "Chakra Petch", sans-serif; font-size: 13.5px; font-weight: 600; color: var(--dim);
+  padding: 7px 13px; border-radius: 999px; border: 1px solid transparent; }
+.tabs a.on { color: var(--gold); border-color: var(--gold-lo); background: rgba(232,179,57,.07); }
+.tabs a:hover { color: var(--ink); }
+.who { margin-left: auto; display: flex; align-items: center; gap: 11px; }
+.who .pct { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--gold); }
+.who .ava { width: 34px; height: 34px; border-radius: 9px; background: linear-gradient(135deg,#2a3350,#171c2c); border: 1px solid var(--edge-lit); }
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 0 28px; }
+.eyebrow { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 2.4px; text-transform: uppercase; color: var(--gold); }
+.concept-note { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--faint); letter-spacing: 1px; text-transform: uppercase; margin: 40px 0 10px; display: flex; align-items: center; gap: 10px; }
+.concept-note::after { content: ""; flex: 1; height: 1px; background: var(--edge); }
+
+/* ───────── 1 · landing hero ───────── */
+.hero { display: grid; grid-template-columns: 420px 1fr; gap: 54px; align-items: center; padding: 72px 0 40px; }
+.cover { position: relative; border-radius: 14px 22px 22px 14px; padding: 34px 30px; min-height: 380px;
+  background: linear-gradient(160deg, #171c30, #0e1120 55%, #131829);
+  border: 1px solid var(--edge-lit);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), inset -14px 0 30px -20px #000, 0 34px 70px -30px rgba(0,0,0,.9);
+  display: flex; flex-direction: column; justify-content: space-between; }
+.cover::before { /* spine */ content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 16px;
+  border-radius: 14px 0 0 14px; background: linear-gradient(90deg, #0a0d18, #1a2138); border-right: 1px solid var(--edge); }
+.cover::after { /* elastic band */ content: ""; position: absolute; top: -6px; bottom: -6px; right: 44px; width: 9px;
+  background: linear-gradient(180deg, var(--gold-lo), var(--gold), var(--gold-lo)); opacity: .85; border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.5); }
+.plate { margin-left: 18px; background: linear-gradient(175deg, #2c2413, #1c170b); border: 1px solid #4a3c17; border-radius: 10px;
+  padding: 16px 18px; box-shadow: inset 0 1px 0 rgba(255,224,138,.22); max-width: 280px; }
+.plate .f { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 2.2px; text-transform: uppercase; color: #9a7f36; }
+.plate h3 { margin: 3px 0 1px; color: var(--brass); font-size: 21px; letter-spacing: .4px;
+  text-shadow: 0 1px 0 rgba(0,0,0,.9), 0 -1px 0 rgba(255,235,170,.2); }
+.plate .est { font-family: "JetBrains Mono", monospace; font-size: 10px; color: #9a7f36; }
+.cover .foot { margin-left: 18px; display: flex; gap: 18px; }
+.cover .foot div b { display: block; font-family: "JetBrains Mono", monospace; font-size: 16px; color: var(--brass); }
+.cover .foot div span { font-family: "JetBrains Mono", monospace; font-size: 8.5px; letter-spacing: 1.6px; text-transform: uppercase; color: #8a7434; }
+
+.hero-copy h1 { font-size: 46px; line-height: 1.08; margin: 14px 0 16px; letter-spacing: .3px; }
+.hero-copy p.lead { color: var(--dim); font-size: 17px; max-width: 460px; margin: 0 0 26px; }
+.cta-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.btn { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 14.5px; border-radius: 11px; padding: 13px 22px; cursor: pointer; border: none; }
+.btn.gold { background: linear-gradient(180deg, var(--gold), #c9991f); color: #1a1303; box-shadow: 0 10px 26px -10px rgba(232,179,57,.55); }
+.btn.ghost { background: transparent; color: var(--dim); border: 1px solid var(--edge); }
+.trust { margin-top: 18px; font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--faint); }
+.trust b { color: var(--auth); font-weight: 600; }
+
+/* ───────── 2 · the spread ───────── */
+.spread { display: flex; margin-top: 18px; }
+.rtabs { display: flex; flex-direction: column; gap: 7px; padding-top: 34px; }
+.rtab { writing-mode: vertical-rl; font-family: "Chakra Petch", sans-serif; font-size: 11.5px; font-weight: 600; letter-spacing: 1.2px;
+  text-transform: uppercase; padding: 14px 7px; border-radius: 10px 0 0 10px; border: 1px solid var(--edge); border-right: none;
+  color: var(--dim); background: var(--case); cursor: pointer; }
+.rtab.on { color: #1a1303; background: linear-gradient(180deg, var(--ua), #c9991f); border-color: var(--gold-lo); }
+.rtab.r { color: var(--rare); } .rtab.u { color: var(--uncommon); }
+.page { flex: 1; position: relative; border-radius: 6px 18px 18px 6px; padding: 26px 28px 22px;
+  background: linear-gradient(180deg, #151926, #10131d);
+  border: 1px solid var(--edge-lit);
+  box-shadow: inset 14px 0 26px -20px #000, 0 30px 60px -28px rgba(0,0,0,.9); }
+.page::before { /* rings */ content: ""; position: absolute; left: -8px; top: 54px; bottom: 54px; width: 16px;
+  background: repeating-linear-gradient(180deg, transparent 0 46px, var(--edge-lit) 46px 60px); border-radius: 8px; opacity: .85; }
+.page-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+.page-head h3 { margin: 0; font-size: 18px; }
+.page-head .cnt { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--faint); }
+.page-head .search { margin-left: auto; display: flex; align-items: center; gap: 8px; background: var(--case);
+  border: 1px solid var(--edge); border-radius: 999px; padding: 7px 14px; color: var(--faint); font-size: 12.5px; min-width: 210px; }
+
+.pockets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.pocket { position: relative; border-radius: 12px; padding: 12px; background: rgba(255,255,255,.025);
+  border: 1px solid var(--sleeve); overflow: hidden; transition: transform .18s; }
+.pocket:hover { transform: translateY(-3px); }
+.pocket::before { /* PVC sheen — the signature */ content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+  background: linear-gradient(118deg, transparent 28%, rgba(255,255,255,.11) 42%, rgba(255,255,255,.02) 52%, transparent 64%); }
+.pocket::after { /* seam */ content: ""; position: absolute; left: 7%; right: 7%; top: 0; height: 8px; border-radius: 0 0 7px 7px;
+  background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.07); border-top: none; z-index: 3; }
+.card { border-radius: 9px; padding: 13px; background: linear-gradient(180deg, var(--case2), var(--case)); border: 1px solid var(--edge); }
+.card .top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
+.card .ico { width: 46px; height: 46px; border-radius: 9px; display: grid; place-items: center; font-size: 22px;
+  background: linear-gradient(135deg, #2a3350, #171c2c); border: 1px solid var(--edge-lit); }
+.chip { font-family: "JetBrains Mono", monospace; font-size: 10.5px; font-weight: 700; border-radius: 999px; padding: 1px 9px; border: 1px solid currentColor; }
+.card h4 { margin: 0 0 2px; font-size: 14.5px; line-height: 1.3; }
+.card .g { font-size: 11.5px; color: var(--faint); }
+.card .d { font-size: 12px; color: var(--dim); margin-top: 6px; line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card.ultra { border: 1px solid transparent;
+  background: linear-gradient(180deg, var(--case2), var(--case)) padding-box,
+              linear-gradient(110deg, var(--ua), var(--ub), var(--uc), var(--ua)) border-box;
+  background-size: 100%, 240% 100%; animation: foil 6s linear infinite; }
+
+/* new pull */
+.pocket.pull { border-color: rgba(232,179,57,.5); box-shadow: 0 0 0 1px rgba(232,179,57,.25), 0 0 34px -10px rgba(232,179,57,.45); }
+.sticker { position: absolute; z-index: 4; top: 10px; right: -32px; transform: rotate(35deg); font-family: "Chakra Petch", sans-serif;
+  font-size: 10px; font-weight: 700; letter-spacing: 1.6px; padding: 4px 36px; color: #1a1303;
+  background: linear-gradient(180deg, var(--gold), #c9991f); }
+
+/* graded slab */
+.pocket.slabbed { background: transparent; border: none; padding: 0; }
+.pocket.slabbed::before, .pocket.slabbed::after { display: none; }
+.slab { position: relative; border-radius: 13px; padding: 10px; background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.16);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), inset 0 -8px 18px -12px #000, 0 14px 30px -14px rgba(0,0,0,.8); }
+.slab::after { content: ""; position: absolute; inset: 0; border-radius: 13px; pointer-events: none;
+  background: linear-gradient(112deg, transparent 30%, rgba(255,255,255,.14) 44%, transparent 58%); }
+.slab-label { display: flex; align-items: center; justify-content: space-between; border-radius: 7px; padding: 6px 10px; margin-bottom: 9px;
+  background: linear-gradient(175deg, #2c2413, #1c170b); border: 1px solid #4a3c17; }
+.slab-label .l { font-family: "JetBrains Mono", monospace; font-size: 8.5px; letter-spacing: 1.8px; text-transform: uppercase; color: #9a7f36; }
+.slab-label .grade { font-family: "Chakra Petch", sans-serif; font-weight: 700; font-size: 13px; color: var(--brass); }
+
+/* empty sleeve (locked) */
+.pocket.empty { border-style: dashed; border-color: rgba(255,255,255,.13); }
+.pocket.empty .card { border-style: dashed; background: rgba(255,255,255,.015); }
+.pocket.empty .ico { opacity: .35; filter: grayscale(1); }
+.pocket.empty h4 { color: var(--dim); }
+.pin { margin-top: 9px; width: 100%; font-family: "Chakra Petch", sans-serif; font-size: 11.5px; font-weight: 600; color: var(--gold);
+  background: rgba(232,179,57,.06); border: 1px solid rgba(232,179,57,.3); border-radius: 8px; padding: 6px; cursor: pointer; }
+
+.page-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 18px; }
+.dots { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--faint); }
+.turn { font-family: "Chakra Petch", sans-serif; font-size: 12.5px; font-weight: 600; color: var(--gold); background: none;
+  border: 1px solid var(--gold-lo); border-radius: 999px; padding: 7px 16px; cursor: pointer; }
+
+/* ───────── 3 · sets shelf ───────── */
+.shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(225px, 1fr)); gap: 16px; }
+.setbox { position: relative; border-radius: 13px; overflow: hidden; background: linear-gradient(180deg, var(--case), #0d1017);
+  border: 1px solid var(--edge); transition: transform .18s, border-color .18s; cursor: pointer; }
+.setbox:hover { transform: translateY(-4px); border-color: var(--edge-lit); }
+.setbox img.head { width: 100%; height: 86px; object-fit: cover; display: block; background: #1a1f2e; }
+.setbox .fade { position: absolute; inset: 0 0 auto 0; height: 86px; background: linear-gradient(180deg, transparent 35%, #0d1017); }
+.setbox .in { padding: 12px 14px 14px; position: relative; }
+.setbox h4 { margin: 0; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.setbox .n { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--faint); margin-top: 3px; }
+.slots { display: flex; gap: 3px; margin-top: 10px; }
+.slots i { flex: 1; height: 6px; border-radius: 3px; background: #1f2433; }
+.slots i.f { background: linear-gradient(90deg, var(--gold-lo), var(--gold)); }
+.seal { position: absolute; top: 62px; right: 12px; width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center;
+  font-family: "Chakra Petch", sans-serif; font-size: 7.5px; font-weight: 700; letter-spacing: .6px; text-align: center; line-height: 1.25;
+  color: #1a1303; background: radial-gradient(circle at 35% 30%, #ffe9a8, var(--gold) 60%, #b8891c);
+  box-shadow: 0 4px 14px rgba(0,0,0,.55); transform: rotate(-12deg); }
+
+/* ───────── 4 · want list ───────── */
+.want { display: grid; grid-template-columns: 1fr 330px; gap: 26px; align-items: start; }
+.ledger { position: relative; border-radius: 14px; border: 1px solid var(--edge-lit); overflow: hidden;
+  background: linear-gradient(180deg, #131722, #0f121b);
+  box-shadow: 0 26px 60px -30px rgba(0,0,0,.9); }
+.ledger::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .6;
+  background: repeating-linear-gradient(0deg, transparent 0 35px, rgba(79,182,201,.06) 35px 36px); }
+.ledger-head { display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--edge); background: rgba(255,255,255,.02); }
+.ledger-head h3 { margin: 0; font-size: 17px; }
+.ledger-head .prog { margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--gold); }
+.phase { padding: 14px 20px 6px; }
+.phase .ph { display: flex; align-items: center; gap: 10px; font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 2px; text-transform: uppercase; color: var(--uncommon); margin-bottom: 4px; }
+.phase .ph.warn { color: var(--danger); }
+.rowi { position: relative; display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px dashed rgba(255,255,255,.06); }
+.cbx { width: 19px; height: 19px; flex: none; border-radius: 6px; border: 1.5px solid var(--edge-lit); background: var(--case2); display: grid; place-items: center; }
+.cbx.done { background: linear-gradient(180deg, var(--gold), #c9991f); border-color: var(--gold-lo); color: #1a1303; font-size: 12px; font-weight: 800; }
+.rowi .nm { font-family: "Chakra Petch", sans-serif; font-weight: 600; font-size: 13.5px; }
+.rowi .nm.done { color: var(--faint); text-decoration: line-through; }
+.rowi .why { font-size: 12px; color: var(--faint); }
+.rowi .right { margin-left: auto; display: flex; align-items: center; gap: 9px; }
+.glink { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--dim); border: 1px solid var(--edge); border-radius: 999px; padding: 2px 10px; cursor: pointer; }
+.miss { position: absolute; left: -14px; top: 50%; transform: translateY(-50%) rotate(-90deg); transform-origin: center;
+  font-family: "Chakra Petch", sans-serif; font-size: 8px; font-weight: 700; letter-spacing: 1.2px; color: #fff;
+  background: var(--danger); border-radius: 3px; padding: 1px 7px; }
+.want-side { position: sticky; top: 84px; }
+.appraisal { border-radius: 14px; border: 1px solid var(--edge); background: var(--case); padding: 18px 20px; }
+.appraisal .f { font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: 2px; text-transform: uppercase; color: var(--faint); }
+.appraisal h4 { margin: 4px 0 10px; font-size: 16px; }
+.appraisal .row { display: flex; justify-content: space-between; font-size: 13px; padding: 7px 0; border-bottom: 1px dashed rgba(255,255,255,.06); }
+.appraisal .row b { font-family: "JetBrains Mono", monospace; font-weight: 600; color: var(--gold); }
+.appraisal .note { margin-top: 12px; font-size: 12.5px; color: var(--dim); font-style: italic; }
+
+/* ───────── 5 · curator ───────── */
+.curator { display: grid; grid-template-columns: 1fr 430px; gap: 40px; align-items: center; }
+.cur-copy h2 { font-size: 30px; margin: 10px 0 12px; }
+.cur-copy p { color: var(--dim); max-width: 430px; }
+.cur-copy ul { color: var(--dim); font-size: 14px; padding-left: 18px; }
+.cur-copy li { margin: 7px 0; }
+.cur-copy li b { color: var(--ink); }
+.drawer { border-radius: 16px; border: 1px solid var(--edge-lit); background: linear-gradient(180deg, #0e111a, #0a0c12);
+  box-shadow: 0 30px 70px -30px rgba(0,0,0,.95); overflow: hidden; }
+.drawer-head { display: flex; align-items: center; gap: 11px; padding: 14px 16px; border-bottom: 1px solid var(--edge); }
+.drawer-head .mark { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 10px;
+  background: var(--case2); border: 1px solid var(--edge-lit); font-size: 16px; }
+.drawer-head .t { font-family: "Chakra Petch", sans-serif; font-weight: 600; font-size: 15px; }
+.drawer-head .s { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 1.6px; text-transform: uppercase; color: var(--gold); }
+.drawer-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.msg { max-width: 88%; border-radius: 12px; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; }
+.msg.user { align-self: flex-end; background: var(--case2); border: 1px solid var(--edge); border-bottom-right-radius: 4px; }
+.msg.cur { align-self: flex-start; position: relative; background: linear-gradient(180deg, var(--case), #0f121b);
+  border: 1px solid var(--edge); border-left: 2px solid var(--gold-lo); border-bottom-left-radius: 4px; padding-bottom: 30px; }
+.msg.cur em { color: var(--gold); font-style: normal; font-weight: 600; }
+.auth { position: absolute; right: 10px; bottom: 8px; transform: rotate(-6deg); font-family: "Chakra Petch", sans-serif;
+  font-weight: 700; font-size: 9.5px; letter-spacing: 1.8px; color: var(--auth); border: 2px solid var(--auth);
+  border-radius: 4px; padding: 1px 7px; opacity: .85;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.95'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.93'/%3E%3C/svg%3E"); }
+.evid { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--faint); margin-top: 8px; }
+.evid a { color: var(--uncommon); }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chips button { font-family: Inter, sans-serif; font-size: 12.5px; color: var(--ink); background: var(--case);
+  border: 1px solid var(--edge); border-radius: 999px; padding: 6px 13px; cursor: pointer; }
+.composer { display: flex; gap: 9px; padding: 12px 16px 16px; border-top: 1px solid var(--edge); }
+.composer input { flex: 1; background: var(--case); border: 1px solid var(--edge); border-radius: 10px; color: var(--ink);
+  padding: 11px 14px; font-size: 13.5px; outline: none; }
+.composer .btn { padding: 10px 18px; }
+
+/* ───────── 6 · the pull ───────── */
+.pull-sec { text-align: center; padding: 20px 0 8px; }
+.pull-stage { display: flex; justify-content: center; padding: 26px 0 10px; perspective: 1100px; }
+.bigcard { width: 320px; border-radius: 16px; padding: 22px; text-align: left; position: relative;
+  background: linear-gradient(180deg, #1c2133, #12151f) padding-box,
+              linear-gradient(110deg, var(--ua), var(--ub), var(--uc), var(--ua)) border-box;
+  border: 2px solid transparent; background-size: 100%, 240% 100%; animation: foil 6s linear infinite;
+  box-shadow: 0 40px 90px -30px rgba(232,106,200,.35), 0 30px 60px -30px #000;
+  transform: rotateX(6deg) rotateY(-9deg) rotate(-2deg); transition: transform .25s; }
+.bigcard:hover { transform: rotateX(0) rotateY(0) rotate(0) translateY(-6px); }
+.bigcard .glare { position: absolute; inset: 0; border-radius: 14px; pointer-events: none; mix-blend-mode: screen;
+  background: radial-gradient(420px circle at 30% 20%, rgba(255,255,255,.22), transparent 45%); }
+.bigcard .ic { width: 74px; height: 74px; border-radius: 14px; display: grid; place-items: center; font-size: 36px;
+  background: linear-gradient(135deg, #2a3350, #171c2c); border: 1px solid var(--edge-lit); margin-bottom: 14px; }
+.bigcard h3 { margin: 0 0 3px; font-size: 23px; }
+.bigcard .g { color: var(--dim); font-size: 13px; }
+.bigcard .stats { display: flex; gap: 16px; margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.09); }
+.bigcard .stats div b { display: block; font-family: "JetBrains Mono", monospace; font-size: 15px; }
+.bigcard .stats div span { font-family: "JetBrains Mono", monospace; font-size: 8.5px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--faint); }
+.bigcard .brandline { margin-top: 16px; display: flex; justify-content: space-between; align-items: center;
+  font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: 1.6px; color: var(--faint); text-transform: uppercase; }
+.share-row { display: flex; gap: 10px; justify-content: center; margin-top: 22px; flex-wrap: wrap; }
+.share-row .btn.soc { background: var(--case); color: var(--ink); border: 1px solid var(--edge); font-size: 13px; padding: 11px 18px; }
+.pull-sec .sub { color: var(--faint); font-size: 12.5px; font-family: "JetBrains Mono", monospace; margin-top: 14px; }
+
+/* ───────── 7 · plus / footer ───────── */
+.plus { margin: 70px 0 0; border-radius: 18px; border: 1px solid rgba(232,179,57,.3);
+  background: linear-gradient(180deg, rgba(232,179,57,.07), rgba(232,179,57,.02));
+  padding: 30px 34px; display: flex; align-items: center; gap: 30px; flex-wrap: wrap; }
+.plus h3 { margin: 0 0 6px; font-size: 22px; }
+.plus p { margin: 0; color: var(--dim); font-size: 14px; max-width: 560px; }
+.plus .price { margin-left: auto; text-align: right; }
+.plus .price b { font-family: "Chakra Petch", sans-serif; font-size: 26px; color: var(--gold); }
+.plus .price span { display: block; font-size: 12px; color: var(--faint); }
+footer { max-width: 1240px; margin: 0 auto; padding: 40px 28px 60px; color: var(--faint); font-size: 12px;
+  font-family: "JetBrains Mono", monospace; display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+
+section.block { padding: 46px 0 8px; }
+.block-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+.block-head h2 { font-size: 26px; margin: 6px 0 0; }
+.block-head .sub { color: var(--faint); font-size: 13px; font-family: "JetBrains Mono", monospace; }
+
+@media (max-width: 980px) {
+  .hero { grid-template-columns: 1fr; gap: 34px; }
+  .want { grid-template-columns: 1fr; } .want-side { position: static; }
+  .curator { grid-template-columns: 1fr; }
+  .pockets { grid-template-columns: repeat(2, 1fr); }
+  .tabs { display: none; }
+}
+@media (max-width: 620px) { .pockets { grid-template-columns: 1fr; } .hero-copy h1 { font-size: 34px; } }
+</style>
+</head>
+<body>
+<div class="bg"></div>
+
+<!-- ═════════ CHROME ═════════ -->
+<nav class="nav"><div class="nav-in">
+  <div class="brand"><span class="h">H</span><span>Hundo<small>THE TROPHY BINDER</small></span></div>
+  <div class="tabs">
+    <a class="on" href="#binder">Binder</a>
+    <a href="#sets">Sets</a>
+    <a href="#want">Want list</a>
+    <a href="#curator">Curator</a>
+  </div>
+  <div class="who"><span class="pct">38% to hundo</span><span class="ava"></span></div>
+</div></nav>
+
+<div class="wrap">
+
+  <!-- ═════════ 1 · LANDING ═════════ -->
+  <div class="concept-note">Screen 01 · Landing / gate</div>
+  <header class="hero">
+    <div class="cover">
+      <div class="plate">
+        <div class="f">Private collection · Nº 7656-1198</div>
+        <h3>Daniel's Binder</h3>
+        <div class="est">EST. 2015 · STEAM</div>
+      </div>
+      <div class="foot">
+        <div><b>2,847</b><span>pulls</span></div>
+        <div><b>12</b><span>ultra-rare</span></div>
+        <div><b>4</b><span>master sets</span></div>
+      </div>
+    </div>
+    <div class="hero-copy">
+      <div class="eyebrow">Your achievements, sleeved</div>
+      <h1>Every unlock is a card.<br>This is your binder.</h1>
+      <p class="lead">Hundo reads your Steam library and sleeves every achievement by rarity —
+      then its analyst tells you exactly what to chase next, with plans computed from your real data.</p>
+      <div class="cta-row">
+        <button class="btn gold">Open your binder</button>
+        <button class="btn ghost">Sign in through Steam</button>
+      </div>
+      <div class="trust">Every number <b>AUTHENTICATED</b> — computed in a sandbox from your data, never guessed.</div>
+    </div>
+  </header>
+
+  <!-- ═════════ 2 · THE BINDER SPREAD ═════════ -->
+  <div class="concept-note" id="binder">Screen 02 · The binder — cards live in sleeves; locked ones are empty sleeves</div>
+  <section class="block" style="padding-top:10px">
+    <div class="spread">
+      <div class="rtabs">
+        <span class="rtab on">Ultra</span>
+        <span class="rtab r">Rare</span>
+        <span class="rtab u">Uncommon</span>
+        <span class="rtab">Common</span>
+      </div>
+      <div class="page">
+        <div class="page-head">
+          <h3>Ultra-rare</h3>
+          <span class="cnt">page 1 / 2 · 12 sleeved · 3 empty</span>
+          <span class="search">⌕ Search the binder…</span>
+        </div>
+        <div class="pockets">
+          <div class="pocket pull">
+            <span class="sticker">NEW PULL</span>
+            <div class="card ultra">
+              <div class="top"><span class="ico">🕳️</span><span class="chip" style="color:var(--ub)">1.2%</span></div>
+              <h4 class="holo-text">Embrace the Void</h4>
+              <div class="g">Hollow Knight</div>
+              <div class="d">Pantheon of Hallownest, bindings and all. Pulled last night, 23:47.</div>
+            </div>
+          </div>
+          <div class="pocket slabbed">
+            <div class="slab">
+              <div class="slab-label"><span class="l">Curator graded · authentic</span><span class="grade">0.9%</span></div>
+              <div class="card">
+                <div class="top"><span class="ico">🏆</span><span class="chip" style="color:var(--ua)">GEM</span></div>
+                <h4>Platinum God</h4>
+                <div class="g">The Binding of Isaac</div>
+                <div class="d">Every item, every ending. The crown of the whole binder.</div>
+              </div>
+            </div>
+          </div>
+          <div class="pocket">
+            <div class="card ultra">
+              <div class="top"><span class="ico">🍓</span><span class="chip" style="color:var(--ua)">4.7%</span></div>
+              <h4 class="holo-text">Farewell</h4>
+              <div class="g">Celeste</div>
+              <div class="d">Chapter 9 complete — the longest goodbye in platforming.</div>
+            </div>
+          </div>
+          <div class="pocket">
+            <div class="card">
+              <div class="top"><span class="ico">⚔️</span><span class="chip" style="color:var(--rare)">6.4%</span></div>
+              <h4>Skystrider</h4>
+              <div class="g">Hades</div>
+              <div class="d">Fled the Underworld without touching the ground. Somehow.</div>
+            </div>
+          </div>
+          <div class="pocket empty">
+            <div class="card">
+              <div class="top"><span class="ico">🌋</span><span class="chip" style="color:var(--faint)">2.8%</span></div>
+              <h4>Radiant Ending</h4>
+              <div class="g">Hollow Knight</div>
+              <div class="d">The sleeve is waiting. 112 hunters in your rarity band own it.</div>
+              <button class="pin">📌 Pin to want list</button>
+            </div>
+          </div>
+          <div class="pocket empty">
+            <div class="card">
+              <div class="top"><span class="ico">👻</span><span class="chip" style="color:var(--faint)">3.5%</span></div>
+              <h4>Golden — Chapter 3</h4>
+              <div class="g">Celeste</div>
+              <div class="d">Deathless run. The curator rates this "a weekend of nerve."</div>
+              <button class="pin">📌 Pin to want list</button>
+            </div>
+          </div>
+        </div>
+        <div class="page-foot">
+          <span class="dots">● ○ &nbsp; 6 of 15 shown</span>
+          <button class="turn">Turn the page ▸</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════ 3 · SETS ═════════ -->
+  <div class="concept-note" id="sets">Screen 03 · Sets — every game is a set; 100% = the master-set seal</div>
+  <section class="block" style="padding-top:10px">
+    <div class="block-head"><h2>Your sets</h2><span class="sub">120 owned · 4 mastered · sorted by closest to complete</span></div>
+    <div class="shelf">
+      <div class="setbox">
+        <img class="head" src="https://cdn.cloudflare.steamstatic.com/steam/apps/1145360/header.jpg" alt="" loading="lazy"><div class="fade"></div>
+        <div class="in"><h4>Hades</h4><div class="n">44 / 48 collected · 92%</div>
+          <div class="slots"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i></div>
+        </div>
+      </div>
+      <div class="setbox">
+        <img class="head" src="https://cdn.cloudflare.steamstatic.com/steam/apps/367520/header.jpg" alt="" loading="lazy"><div class="fade"></div>
+        <div class="in"><h4>Hollow Knight</h4><div class="n">51 / 63 collected · 81%</div>
+          <div class="slots"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i></div>
+        </div>
+      </div>
+      <div class="setbox">
+        <img class="head" src="https://cdn.cloudflare.steamstatic.com/steam/apps/620/header.jpg" alt="" loading="lazy"><div class="fade"></div>
+        <span class="seal">MASTER<br>SET</span>
+        <div class="in"><h4>Portal 2</h4><div class="n">51 / 51 · complete</div>
+          <div class="slots"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i></div>
+        </div>
+      </div>
+      <div class="setbox">
+        <img class="head" src="https://cdn.cloudflare.steamstatic.com/steam/apps/504230/header.jpg" alt="" loading="lazy"><div class="fade"></div>
+        <div class="in"><h4>Celeste</h4><div class="n">24 / 32 collected · 75%</div>
+          <div class="slots"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i><i></i></div>
+        </div>
+      </div>
+      <div class="setbox">
+        <img class="head" src="https://cdn.cloudflare.steamstatic.com/steam/apps/1245620/header.jpg" alt="" loading="lazy"><div class="fade"></div>
+        <div class="in"><h4>Elden Ring</h4><div class="n">28 / 42 collected · 67%</div>
+          <div class="slots"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════ 4 · WANT LIST ═════════ -->
+  <div class="concept-note" id="want">Screen 04 · The want list — the roadmap in a collector's ledger, appraisal clipped beside it</div>
+  <section class="block" style="padding-top:10px">
+    <div class="block-head"><h2>Want list — Hades</h2><span class="sub">the curator's suggested order · easiest first · missables flagged</span></div>
+    <div class="want">
+      <div class="ledger">
+        <div class="ledger-head">
+          <h3>4 cards to the master set</h3>
+          <span class="prog">92% ▸ 100%</span>
+        </div>
+        <div class="phase">
+          <div class="ph">Phase · story — these land by playing</div>
+          <div class="rowi">
+            <span class="cbx done">✓</span>
+            <span><span class="nm done">The Family Secret</span> <span class="why">— keep clearing runs, it's scripted</span></span>
+            <span class="right"><span class="chip" style="color:var(--uncommon)">24%</span></span>
+          </div>
+          <div class="rowi">
+            <span class="cbx"></span>
+            <span><span class="nm">Death Dealer</span> <span class="why">— clear heat 8; your build already carries this</span></span>
+            <span class="right"><span class="glink">guide ↗</span><span class="chip" style="color:var(--uncommon)">18%</span></span>
+          </div>
+        </div>
+        <div class="phase">
+          <div class="ph warn">Phase · don't-miss — grab before you finish the epilogue</div>
+          <div class="rowi">
+            <span class="miss">MISSABLE</span>
+            <span class="cbx"></span>
+            <span><span class="nm">Dark Reflections</span> <span class="why">— needs a pre-epilogue save; the curator will warn you at the gate</span></span>
+            <span class="right"><span class="glink">guide ↗</span><span class="chip" style="color:var(--rare)">9%</span></span>
+          </div>
+        </div>
+        <div class="phase" style="padding-bottom:16px">
+          <div class="ph" style="color:var(--rare)">Phase · the chase — the one you'll remember</div>
+          <div class="rowi" style="border-bottom:none">
+            <span class="cbx"></span>
+            <span><span class="nm">Skystrider</span> <span class="why">— ~6 attempts at your pace, says your own run data</span></span>
+            <span class="right"><span class="glink">guide ↗</span><span class="chip" style="color:var(--rare)">6.4%</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="want-side">
+        <div class="appraisal">
+          <div class="f">Curator's appraisal · authenticated</div>
+          <h4>One good evening.</h4>
+          <div class="row"><span>Estimated time</span><b>~4 h</b></div>
+          <div class="row"><span>Hardest card</span><b>Skystrider</b></div>
+          <div class="row"><span>Your pace vs. average</span><b>1.3× faster</b></div>
+          <div class="row" style="border-bottom:none"><span>Binder value after</span><b>+280 pts</b></div>
+          <p class="note">"Three of the four are formalities. Skystrider is the trophy —
+          your dash-timing stats from Celeste say you're built for it."</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════ 5 · CURATOR ═════════ -->
+  <div class="concept-note" id="curator">Screen 05 · The curator — chat drawer; computed answers carry the AUTHENTICATED stamp</div>
+  <section class="block curator" style="padding-top:16px">
+    <div class="cur-copy">
+      <div class="eyebrow">The analyst behind the binder</div>
+      <h2>Ask anything.<br>It answers from your data.</h2>
+      <p>The curator plans, writes real analysis code, runs it in a sandbox against your library,
+      and checks its own work — then stamps what it verified.</p>
+      <ul>
+        <li><b>Authenticated</b> — every number computed, never guessed; tap the stamp to see the code.</li>
+        <li><b>Knows your pace</b> — estimates use your unlock history, not global averages.</li>
+        <li><b>Remembers you</b> — "no multiplayer" said once is a standing rule.</li>
+      </ul>
+    </div>
+    <div class="drawer">
+      <div class="drawer-head">
+        <span class="mark">✦</span>
+        <div><div class="t">The Curator</div><div class="s">appraiser · knows your whole binder</div></div>
+      </div>
+      <div class="drawer-body">
+        <div class="msg user">what should I chase this weekend?</div>
+        <div class="msg cur">
+          Finish the <em>Hades master set</em> — you're 4 cards out and only
+          <em>Skystrider (6.4%)</em> is a real fight. That seals your 5th set and
+          pulls your binder to <em>40%</em>.
+          <div class="evid">evidence: sandbox run #1 · 0 retries · <a href="#">view the code</a></div>
+          <span class="auth">AUTHENTICATED</span>
+        </div>
+        <div class="chips">
+          <button>🗺️ Build the want list</button>
+          <button>⏱️ How long at my pace?</button>
+          <button>💎 Rarest I can still pull</button>
+        </div>
+      </div>
+      <div class="composer">
+        <input placeholder="Ask about your binder…">
+        <button class="btn gold">Ask</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═════════ 6 · THE PULL ═════════ -->
+  <div class="concept-note">Screen 06 · The pull — sharing = sliding a card out of its sleeve</div>
+  <section class="block pull-sec" style="padding-top:16px">
+    <div class="eyebrow">Last night, 23:47</div>
+    <h2 style="font-size:30px;margin:10px 0 0">You pulled a <span class="holo-text">1.2%</span>.</h2>
+    <div class="pull-stage">
+      <div class="bigcard">
+        <div class="glare"></div>
+        <div class="ic">🕳️</div>
+        <h3 class="holo-text">Embrace the Void</h3>
+        <div class="g">Hollow Knight · Pantheon of Hallownest</div>
+        <div class="stats">
+          <div><b style="color:var(--ub)">1.2%</b><span>of all players</span></div>
+          <div><b>#3</b><span>rarest in binder</span></div>
+          <div><b>187 h</b><span>in the making</span></div>
+        </div>
+        <div class="brandline"><span>HUNDO · TROPHY BINDER</span><span>Nº 7656-1198</span></div>
+      </div>
+    </div>
+    <div class="share-row">
+      <button class="btn gold">↗ Flex this card</button>
+      <button class="btn soc">Discord</button>
+      <button class="btn soc">Reddit</button>
+      <button class="btn soc">X</button>
+    </div>
+    <div class="sub">renders a share image · the link opens your public binder</div>
+  </section>
+
+  <!-- ═════════ 7 · HUNDO+ ═════════ -->
+  <div class="plus">
+    <div>
+      <h3>Hundo<span style="color:var(--gold)">+</span></h3>
+      <p>Unlimited curator questions & want lists · live pull alerts while you play ·
+      the Monday appraisal in your inbox · premium sleeve finishes for the binder.</p>
+    </div>
+    <div class="price"><b>$4.99<span style="font-size:14px">/mo</span></b><span>or $39/year · free tier stays generous</span></div>
+  </div>
+
+</div>
+
+<footer>
+  <span>HUNDO · concept — "The Binder" direction · July 2026</span>
+  <span>not affiliated with Valve · Steam is a trademark of Valve Corporation</span>
+</footer>
+
+<script>
+// cursor glare on the big pull card (concept-level interaction)
+const big = document.querySelector('.bigcard');
+if (big && matchMedia('(prefers-reduced-motion: no-preference)').matches) {
+  big.addEventListener('mousemove', (e) => {
+    const r = big.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+    big.querySelector('.glare').style.background =
+      `radial-gradient(420px circle at ${px*100}% ${py*100}%, rgba(255,255,255,.25), transparent 45%)`;
+    big.style.transform = `rotateX(${(0.5-py)*10}deg) rotateY(${(px-0.5)*14}deg)`;
+  });
+  big.addEventListener('mouseleave', () => { big.style.transform = ''; });
+}
+</script>
+</body>
+</html>

@@ -13,24 +13,6 @@ type SortKey = "rare" | "common" | "recent";
 const FONT_MONO = "'JetBrains Mono',monospace";
 const FONT_HEAD = "'Chakra Petch',sans-serif";
 
-// Curated "popular to beat" list (lifted from the prototype). Ownership is overlaid
-// from the user's library; everything else is editorial.
-const BEAT_GAMES = [
-  { name: "Portal 2", appid: 620, hours: 13, diff: 1, note: "Tight, fair puzzles — the friendliest full clear in gaming." },
-  { name: "It Takes Two", appid: 1426210, hours: 15, diff: 1, note: "Co-op story; nearly everything unlocks just by finishing." },
-  { name: "Vampire Survivors", appid: 1794680, hours: 70, diff: 2, note: "Unlocks cascade into each other — a relaxed checklist." },
-  { name: "Subnautica", appid: 264710, hours: 45, diff: 2, note: "Exploration-driven, no skill gates, very few missables." },
-  { name: "Stardew Valley", appid: 413150, hours: 150, diff: 3, note: "Long but gentle — Perfection is a cozy marathon." },
-  { name: "Hades", appid: 1145360, hours: 95, diff: 3, note: "Story-gated; the runs naturally carry you to most of it." },
-  { name: "DOOM Eternal", appid: 782330, hours: 45, diff: 4, note: "Combat mastery plus a Master Levels grind raise the bar." },
-  { name: "Hollow Knight", appid: 367520, hours: 62, diff: 4, note: "Pantheon bosses make the final stretch genuinely tough." },
-  { name: "Elden Ring", appid: 1245620, hours: 130, diff: 4, note: "Forgiving on missables — time is the real cost here." },
-  { name: "Cuphead", appid: 268910, hours: 25, diff: 5, note: "Boss-rush precision; the S-ranks are brutal." },
-  { name: "Celeste", appid: 504230, hours: 38, diff: 5, note: "C-sides and golden strawberries are a true test of nerve." },
-];
-const DIFF_COL: Record<number, string> = { 1: C.uncommon, 2: C.uc, 3: C.gold, 4: C.rare, 5: C.ub };
-const DIFF_LAB: Record<number, string> = { 1: "Breezy", 2: "Easy", 3: "Moderate", 4: "Hard", 5: "Brutal" };
-
 const panel: React.CSSProperties = {
   background: "linear-gradient(180deg,#12151f,#0e111a)", border: `1px solid ${C.edge}`,
   borderRadius: 16, boxShadow: "inset 0 1px 0 rgba(255,255,255,.03)",
@@ -74,6 +56,18 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
   useEffect(() => { getPopular(session.steam_id).then((r) => setPopular(r.games)).catch(() => {}); }, [session.steam_id]);
   useEffect(() => setLimit(30), [filter, show, search, sort, game]);
 
+  // Escape closes the top-most modal (card detail first, then game drill-down).
+  useEffect(() => {
+    if (!selected && !gameView) return;
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (selected) setSelected(null);
+      else setGameView(null);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [selected, gameView]);
+
   function askCurator(q: string) { setInject((i) => ({ q, nonce: i.nonce + 1 })); setCuratorOpen(true); setSelected(null); setGameView(null); }
   function openRoadmap(g = "") { setRoadmapGame(g); setRoadmapOpen(true); setSelected(null); setGameView(null); }
 
@@ -103,7 +97,12 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
   const mixMax = Math.max(lib.mix.common, lib.mix.uncommon, lib.mix.rare, lib.mix.ultra, 1);
   const mixTotal = lib.mix.common + lib.mix.uncommon + lib.mix.rare + lib.mix.ultra;
   const elite = mixTotal ? Math.round((lib.mix.rare + lib.mix.ultra) / mixTotal * 100) : 0;
-  const owned = new Set(lib.library.map((n) => n.toLowerCase()));
+  // "Easiest to 100%" — the computed curator ranking (community unlock rates),
+  // joined back to the library entry for the header image + counts.
+  const beatable = lib.curator.beatable.flatMap((b) => {
+    const g = lib.games.find((x) => x.game === b.game);
+    return g ? [{ ...b, g }] : [];
+  });
   const myGames = (gameSearch.trim()
     ? lib.games.filter((g) => g.game.toLowerCase().includes(gameSearch.trim().toLowerCase()))
     : lib.games).slice().sort((a, b) => b.play - a.play);
@@ -247,7 +246,7 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
       {/* GRID */}
       {shown.length > 0 ? (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(248px,1fr))", gap: 14 }}>
-          {shown.map((c, i) => <AchievementCard key={i} card={c} onClick={() => setSelected(c)} onGame={() => { const g = lib.games.find((x) => x.game === c.game); if (g) setGameView(g); }} />)}
+          {shown.map((c) => <AchievementCard key={`${c.game}::${c.name}`} card={c} onClick={() => setSelected(c)} onGame={() => { const g = lib.games.find((x) => x.game === c.game); if (g) setGameView(g); }} />)}
         </div>
       ) : (
         <div style={{ textAlign: "center", color: C.inkFaint, padding: 50, fontFamily: FONT_MONO, fontSize: 13 }}>No achievements match — try a different search or filter.</div>
@@ -318,42 +317,39 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
         </>
       )}
 
-      {/* POPULAR TO BEAT */}
-      <div ref={beatRef} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "36px 2px 14px" }}>
-        <div style={sectionLabel}>Popular on Steam to beat</div><div style={hr} />
-        <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint }}>avg time · difficulty</div>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(264px,1fr))", gap: 16 }}>
-        {BEAT_GAMES.map((g) => {
-          const col = DIFF_COL[g.diff];
-          return (
-            <div key={g.appid} style={{ ...panel, borderRadius: 14, overflow: "hidden" }}>
-              <div style={{ position: "relative" }}>
-                <img src={STEAM_HEADER(g.appid)} alt="" loading="lazy" onError={onImgError} style={{ width: "100%", height: 94, objectFit: "cover", display: "block" }} />
-                <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg,transparent 35%,#0e111a)" }} />
-                {owned.has(g.name.toLowerCase()) && (
-                  <span style={{ position: "absolute", top: 8, right: 8, fontFamily: FONT_MONO, fontSize: 9, letterSpacing: ".5px", textTransform: "uppercase", padding: "3px 8px", borderRadius: 999, background: "rgba(10,12,18,.82)", border: `1px solid ${C.goldLo}`, color: C.gold }}>In your library</span>
-                )}
-              </div>
-              <div style={{ padding: "11px 14px 14px" }}>
-                <div style={{ fontFamily: FONT_HEAD, fontWeight: 600, fontSize: 15 }}>{g.name}</div>
-                <p style={{ color: C.inkDim, fontSize: 12, lineHeight: 1.45, margin: "5px 0 0", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{g.note}</p>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 11 }}>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: C.ink }}>~{g.hours}h <span style={{ color: C.inkFaint }}>to 100%</span></span>
-                  <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: col }}>{DIFF_LAB[g.diff]}</span>
+      {/* EASIEST TO 100% — computed from the user's own library (curator.beatable) */}
+      {beatable.length > 0 && (
+        <>
+          <div ref={beatRef} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "36px 2px 14px" }}>
+            <div style={sectionLabel}>Easiest to 100% — in your library</div><div style={hr} />
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.inkFaint }}>ranked by community unlock rates</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(264px,1fr))", gap: 16 }}>
+            {beatable.map((b) => (
+              <div key={b.g.app} onClick={() => setGameView(b.g)} style={{ cursor: "pointer", ...panel, borderRadius: 14, overflow: "hidden" }}>
+                <div style={{ position: "relative" }}>
+                  <img src={STEAM_HEADER(b.g.app)} alt="" loading="lazy" onError={onImgError} style={{ width: "100%", height: 94, objectFit: "cover", display: "block" }} />
+                  <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg,transparent 35%,#0e111a)" }} />
                 </div>
-                <div style={{ display: "flex", gap: 4, marginTop: 9 }}>
-                  {[1, 2, 3, 4, 5].map((i) => <span key={i} style={{ flex: 1, height: 5, borderRadius: 3, background: i <= g.diff ? col : "#1f2433" }} />)}
-                </div>
-                <div style={{ display: "flex", gap: 7, marginTop: 11 }}>
-                  <a href={`https://store.steampowered.com/app/${g.appid}/`} target="_blank" rel="noreferrer" style={{ flex: 1, textAlign: "center", textDecoration: "none", fontFamily: FONT_HEAD, fontSize: 11.5, fontWeight: 600, color: "#c2c9d6", background: C.case2, border: `1px solid ${C.edge}`, borderRadius: 8, padding: "6px 9px" }}>Steam store</a>
-                  <button onClick={() => openRoadmap(g.name)} style={{ flex: 1, textAlign: "center", fontFamily: FONT_HEAD, fontSize: 11.5, fontWeight: 600, color: "#c2c9d6", background: C.case2, border: `1px solid ${C.edge}`, borderRadius: 8, padding: "6px 9px", cursor: "pointer" }}>Roadmap</button>
+                <div style={{ padding: "11px 14px 14px" }}>
+                  <div style={{ fontFamily: FONT_HEAD, fontWeight: 600, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{b.game}</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 8 }}>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: C.ink }}>{b.g.total - b.g.unlocked} <span style={{ color: C.inkFaint }}>to go</span></span>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.uncommon }}>avg player {Math.round(b.avg)}%</span>
+                  </div>
+                  <div style={{ height: 6, background: C.case2, border: `1px solid ${C.edge}`, borderRadius: 6, overflow: "hidden", marginTop: 9 }}>
+                    <div style={{ height: "100%", width: `${b.g.pct}%`, borderRadius: 5, background: `linear-gradient(90deg,${C.goldLo},${C.gold})` }} />
+                  </div>
+                  <div style={{ display: "flex", gap: 7, marginTop: 11 }}>
+                    <span style={{ flex: 1, textAlign: "center", fontFamily: FONT_MONO, fontSize: 11, color: C.gold, padding: "6px 9px" }}>{b.g.pct}% yours</span>
+                    <button onClick={(e) => { e.stopPropagation(); openRoadmap(b.game); }} style={{ flex: 1, textAlign: "center", fontFamily: FONT_HEAD, fontSize: 11.5, fontWeight: 600, color: "#c2c9d6", background: C.case2, border: `1px solid ${C.edge}`, borderRadius: 8, padding: "6px 9px", cursor: "pointer" }}>Roadmap</button>
+                  </div>
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {selected && <CardModal card={selected} onClose={() => setSelected(null)} onAsk={() => askCurator(`How do I unlock "${selected.name}" in ${selected.game}?`)} onGame={() => { const g = lib.games.find((x) => x.game === selected.game); setSelected(null); if (g) setGameView(g); }} />}
       {gameView && <GameModal g={gameView} onClose={() => setGameView(null)} onRoadmap={() => openRoadmap(gameView.game)} onCard={(c) => { setGameView(null); setSelected(c); }} />}
@@ -427,10 +423,10 @@ function GameModal({ g, onClose, onRoadmap, onCard }: { g: LibGame; onClose: () 
           </div>
           {g.unlocked < g.total && <button onClick={onRoadmap} style={{ ...ctaBtn, marginTop: 16 }}>✦ Build me a roadmap to 100%</button>}
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 16 }}>
-            {sorted.map((a, i) => {
-              const col = tierColor(tierOf(a.pct)); const clickable = !a.achieved;
+            {sorted.map((a) => {
+              const col = tierColor(tierOf(a.pct));
               return (
-                <div key={i} onClick={() => clickable && onCard(a)} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 9px", borderRadius: 9, background: C.case, border: `1px solid ${C.edge}`, opacity: a.achieved ? 1 : 0.62, cursor: clickable ? "pointer" : "default" }}>
+                <div key={a.name} onClick={() => onCard(a)} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 9px", borderRadius: 9, background: C.case, border: `1px solid ${C.edge}`, opacity: a.achieved ? 1 : 0.62, cursor: "pointer" }}>
                   <img src={a.icon} alt="" onError={onImgError} style={{ width: 34, height: 34, borderRadius: 7, objectFit: "cover", flex: "none", filter: a.achieved ? "none" : "saturate(.7)" }} />
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ fontFamily: FONT_HEAD, fontWeight: 600, fontSize: 13 }}>{a.name}{a.hidden ? " 🔒" : ""}</div>
