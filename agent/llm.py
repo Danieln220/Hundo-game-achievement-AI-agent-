@@ -7,6 +7,16 @@ important once many users share one API key.
 """
 import time
 
+try:
+    # Dev boxes behind SSL interception (corp proxy/AV) fail httpx's certificate
+    # check against api.deepseek.com; trusting the OS certificate store fixes it.
+    # Harmless in prod (the Debian image ships system CAs) and a no-op when the
+    # package is absent. truststore is already pinned in requirements.txt.
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 from openai import OpenAI, APIConnectionError, APITimeoutError, RateLimitError, InternalServerError
 
 from config import LLM_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL_FLASH, LLM_TIMEOUT_SECONDS
