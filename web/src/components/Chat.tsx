@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { askStream, chart } from "../api";
-import type { AskResult, Turn } from "../types";
+import type { AskResult, ChartSpec, Turn } from "../types";
 import Message from "./Message";
 import ProgressSteps from "./ProgressSteps";
 import SuggestionChips from "./SuggestionChips";
@@ -13,7 +13,8 @@ interface UserMsg {
 interface AssistantMsg {
   role: "assistant";
   result: AskResult;
-  chartUrl?: string | null;
+  chartSpec?: ChartSpec | null;
+  chartUrl?: string | null;   // legacy PNG (pre-19.2)
   chartLoading?: boolean;
   retryQuestion?: string; // set on error/stop so the message can offer a retry
 }
@@ -163,19 +164,20 @@ export default function Chat({
         {
           role: "assistant",
           result,
+          chartSpec: result.chart_spec ?? null,
           chartUrl: result.chart_url,
-          chartLoading: !!result.chart_pending && !result.chart_url,
+          chartLoading: !!result.chart_pending && !result.chart_url && !result.chart_spec,
         },
       ]);
 
-      // Answer-first: fetch the chart in a second pass if one is pending.
-      if (result.chart_pending && !result.chart_url) {
+      // Answer-first: fetch the chart spec in a second pass if one is pending.
+      if (result.chart_pending && !result.chart_url && !result.chart_spec) {
         try {
           const c = await chart(result, controller.signal);
           setMessages((m) =>
             m.map((msg, i) =>
               i === assistantIndex && msg.role === "assistant"
-                ? { ...msg, chartUrl: c.chart_url, chartLoading: false }
+                ? { ...msg, chartSpec: c.chart_spec ?? null, chartUrl: c.chart_url, chartLoading: false }
                 : msg
             )
           );
@@ -242,6 +244,7 @@ export default function Chat({
               key={i}
               role="assistant"
               result={m.result}
+              chartSpec={m.chartSpec}
               chartUrl={m.chartUrl}
               chartLoading={m.chartLoading}
               onAction={send}

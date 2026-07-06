@@ -13,7 +13,8 @@ from typing import Optional
 
 from config import STEAM_ID, DEEPSEEK_MODEL_FLASH
 from data_layer.snapshot import load_frames
-from .graph import build_graph, generate_chart
+from .graph import build_graph, generate_chart_spec
+from .fastpath import fast_answer  # noqa: F401 — public seam (API calls it before run())
 from .llm import call_llm
 
 # The AI itself decides whether a message is small-talk vs a real data question —
@@ -215,13 +216,14 @@ def run_stream(
     yield "result", holder.get("final", {})
 
 
-def make_chart(result: dict) -> Optional[str]:
-    """Generate a chart for an already-computed result (answer-first UX).
+def make_chart(result: dict) -> Optional[dict]:
+    """Build the chart SPEC for an already-computed result (answer-first UX).
 
     The UI calls run() first, shows the answer, then calls this only when
-    result['chart_pending'] is True. Returns a chart file path or None.
-    Kept as a separate seam so the chart's extra Pro call + render never
-    blocks the answer the user is waiting for."""
+    result['chart_pending'] is True. Returns {title, x_label, items} for the
+    frontend to render (19.2 — no matplotlib/PNG in the product path), or None.
+    Kept as a separate seam so the chart's extra Pro call never blocks the
+    answer the user is waiting for."""
     if not result or not result.get("last_result"):
         return None
     steam_id = result.get("steam_id") or STEAM_ID
@@ -232,4 +234,4 @@ def make_chart(result: dict) -> Optional[str]:
         # so a chart can be generated from just the lightweight result echo.
         from .graph import _build_schema
         state["schema"] = _build_schema(frames)
-    return generate_chart(state, frames)
+    return generate_chart_spec(state, frames)

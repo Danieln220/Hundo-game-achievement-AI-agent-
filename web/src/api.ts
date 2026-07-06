@@ -1,5 +1,6 @@
 import type {
   AskResult,
+  ChartSpec,
   LibraryData,
   SessionResponse,
   SessionStatus,
@@ -77,7 +78,7 @@ export const ask = (question: string, steam_id: string, history: Turn[]) =>
   post<AskResult>("/ask", { question, steam_id, history, with_insight: true });
 
 export const chart = (result: AskResult, signal?: AbortSignal) =>
-  post<{ chart_url: string | null }>("/chart", { result }, signal);
+  post<{ chart_spec: ChartSpec | null; chart_url: string | null }>("/chart", { result }, signal);
 
 // Streaming ask: reads the SSE stream from a POST (EventSource is GET-only, so we
 // parse the text/event-stream manually). Calls onProgress(node) as nodes fire,

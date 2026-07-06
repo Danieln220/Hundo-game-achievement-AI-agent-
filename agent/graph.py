@@ -13,10 +13,8 @@ import difflib
 import json
 import operator
 import re
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
-from pathlib import Path
 from typing import Annotated, Literal, Optional, TypedDict
 
 import pandas as pd
@@ -51,8 +49,7 @@ class AgentState(TypedDict, total=False):
     insight: Optional[str]             # proactive follow-up suggestion
     roadmap: Optional[dict]            # structured roadmap data for rich rendering
     audit: Optional[dict]              # structured audit data for rich rendering
-    chart_pending: bool                # True if a chart applies (generated post-answer)
-    chart_path: Optional[str]
+    chart_pending: bool                # True if a chart applies (spec built post-answer)
     done: bool
     _token_sink: Optional[object]      # run-only callable(token) for live answer streaming
     memory: Optional[str]              # cross-session per-user memory summary (API path only)
@@ -227,39 +224,31 @@ answer they just received, add ONE short, genuinely useful follow-up suggestion 
 with NONE."""
 
 _CHART_YES_PATTERNS = re.compile(
-    r"\b(which game|top\s+\d|closest|most played|highest|lowest|best game|worst game"
+    r"\b(chart|plot|graph|visuali[sz]e|which game|top\s+\d|closest|most played|highest|lowest"
+    r"|best game|worst game"
     r"|across games?|per game|each game|breakdown|distribution|compare|ranking"
     r"|least completion|most achievement|rarest.{0,20}top|top.{0,20}rare)\b",
     re.IGNORECASE,
 )
 
-_CHART_CODE_SYSTEM = """You are a matplotlib expert writing code to visualize Steam achievement data.
+_CHART_SPEC_SYSTEM = """You are a pandas expert extracting a small CHART DATASET from Steam achievement data.
 
-Pre-loaded variables (do NOT redefine):
-- games, achievements, player_unlocks (DataFrames)
-- pd, np, plt (matplotlib.pyplot)
-- CHART_PATH (string — the file path to save the figure to)
+Pre-loaded variables (do NOT redefine, do NOT import): games, achievements, player_unlocks, pd, np, json.
 
 CRITICAL — stay consistent with the analysis:
 You are given the ANALYSIS CODE that produced the answer. REUSE its exact filtering,
 joins, and sorting so the chart shows the SAME items as the answer. Do NOT re-derive
-the data with different logic. Your only change is to show the top N rows (≈10) instead
-of just the single top result, then plot the same metric the analysis computed.
-
-Avoid empty bars:
-- Plot the metric the analysis used (e.g. completion %, or rarity_pct for "rarest").
-- DROP rows where that metric is NaN/missing before plotting (e.g. dropna on it).
-- If the analysis only considered UNLOCKED achievements, keep that same filter.
+the data with different logic. Your only change is to keep the top N rows (≈10)
+instead of just the single top result.
 
 Rules:
-1. Create one clear, well-labeled chart (title, axis labels, readable font sizes)
-2. For long names use a horizontal bar chart (barh) with tight layout
-3. Save with: plt.savefig(CHART_PATH, bbox_inches='tight', dpi=120)
-4. Call plt.close() after saving
-5. Set result = CHART_PATH
-6. Output ONLY raw Python code, no markdown fences"""
-
-_CHARTS_DIR = Path(__file__).parent.parent / "data" / "charts"
+1. Build at most 10 items of {"label": <string>, "value": <number>}, ordered as the
+   analysis orders them (best first). Labels are game or achievement names.
+2. DROP rows where the metric is NaN/missing. Use the SAME metric the analysis used
+   (e.g. completion %, or rarity_pct for "rarest").
+3. Assign EXACTLY:
+   result = json.dumps({"title": <short title>, "x_label": <metric name, e.g. "Completion %">, "items": [...]})
+4. Output ONLY raw Python code, no markdown fences."""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -400,35 +389,56 @@ def _build_schema(frames: dict[str, pd.DataFrame]) -> str:
     return "\n".join(lines)
 
 
-def generate_chart(state: AgentState, frames: dict[str, pd.DataFrame]) -> Optional[str]:
-    """Keyword-check if a chart helps, then ask Pro to write the code, run it in the sandbox.
-    Returns the saved chart path, or None if not applicable or generation failed."""
+def _valid_chart_spec(raw: str) -> Optional[dict]:
+    """Validate + normalize an LLM-produced chart spec. Returns a clean
+    {title, x_label, items:[{label, value}]} dict or None — a bad spec means
+    'no chart', never a broken render downstream."""
+    try:
+        spec = json.loads(raw)
+    except Exception:
+        return None
+    items = spec.get("items") if isinstance(spec, dict) else None
+    if not isinstance(items, list) or not (1 <= len(items) <= 12):
+        return None
+    clean = []
+    for it in items:
+        try:
+            label = str(it["label"]).strip()[:60]
+            value = float(it["value"])
+        except Exception:
+            return None
+        if not label or value != value or value in (float("inf"), float("-inf")):
+            return None
+        clean.append({"label": label, "value": round(value, 2)})
+    return {"title": str(spec.get("title") or "").strip()[:80] or "Chart",
+            "x_label": str(spec.get("x_label") or "").strip()[:40],
+            "items": clean}
+
+
+def generate_chart_spec(state: AgentState, frames: dict[str, pd.DataFrame]) -> Optional[dict]:
+    """Keyword-check if a chart helps, then ask Pro to extract the SAME data the
+    analysis used as a small JSON series; the frontend renders it (19.2 — no
+    matplotlib, no PNG, no storage). Returns the validated spec dict or None."""
     if not _CHART_YES_PATTERNS.search(state.get("question", "")):
         return None
-
-    _CHARTS_DIR.mkdir(parents=True, exist_ok=True)
-    chart_path = str(_CHARTS_DIR / f"{uuid.uuid4().hex}.png")
 
     prompt = (
         f"Schema:\n{state['schema']}\n\n"
         f"Question: {state['question']}\n\n"
-        f"ANALYSIS CODE (reuse this exact logic, just show the top ~10):\n"
+        f"ANALYSIS CODE (reuse this exact logic, just keep the top ~10 rows):\n"
         f"{state.get('last_code', '')}\n\n"
         f"Analysis result (the answer shown to the user):\n{state.get('last_result', '')}\n\n"
-        f"CHART_PATH = {chart_path!r}\n\n"
-        "Write matplotlib code to visualize this result consistently with the analysis. "
-        "Use CHART_PATH to save the figure and set result = CHART_PATH."
+        "Return the chart dataset via result = json.dumps({...}) as specified."
     )
-    raw = call_llm(prompt, model=DEEPSEEK_MODEL_PRO, system=_CHART_CODE_SYSTEM)
-    code = f"CHART_PATH = {chart_path!r}\n{_extract_code(raw)}"
-
-    _, error = run_user_code(code, frames, state.get("steam_id"))
-    if error or not Path(chart_path).exists():
-        # Surface WHY (timeout vs crash vs no-file) — otherwise chart failures are
-        # invisible in prod. Cheap log, no behavior change.
-        print(f"[chart] generation failed: {error or 'chart file not written'}")
+    raw = call_llm(prompt, model=DEEPSEEK_MODEL_PRO, system=_CHART_SPEC_SYSTEM)
+    result, error = run_user_code(_extract_code(raw), frames, state.get("steam_id"))
+    if error or not result:
+        print(f"[chart] spec generation failed: {error or 'no output'}")
         return None
-    return chart_path
+    spec = _valid_chart_spec(result)
+    if spec is None:
+        print(f"[chart] invalid spec: {result[:120]}")
+    return spec
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
@@ -1117,28 +1127,6 @@ ONE warm, encouraging opening sentence for an audit report (no stats dumps, no l
 human framing of where the player is at). Recent 2026 dates are valid, not errors."""
 
 
-def _audit_chart(cbg: list, frames: dict, steam_id: Optional[str]) -> Optional[str]:
-    """Render the 'completion % by top games' bar chart for the audit."""
-    if not cbg:
-        return None
-    _CHARTS_DIR.mkdir(parents=True, exist_ok=True)
-    cp = str(_CHARTS_DIR / f"{uuid.uuid4().hex}.png")
-    names = [d.get("game", "") for d in cbg][:10]
-    pcts  = [d.get("pct", 0) for d in cbg][:10]
-    code = (
-        f"CHART_PATH = {cp!r}\nnames = {names!r}\npcts = {pcts!r}\n"
-        "y = list(range(len(names)))\n"
-        "fig, ax = plt.subplots(figsize=(10, 6))\n"
-        "ax.barh(y, pcts, color='steelblue')\n"
-        "ax.set_yticks(y); ax.set_yticklabels(names); ax.invert_yaxis()\n"
-        "ax.set_xlabel('Completion %'); ax.set_title('Top games by completion')\n"
-        "plt.tight_layout(); plt.savefig(CHART_PATH, bbox_inches='tight', dpi=120); plt.close()\n"
-        "result = CHART_PATH\n"
-    )
-    _, err = run_user_code(code, frames, steam_id)
-    return cp if (not err and Path(cp).exists()) else None
-
-
 def _audit_metrics(frames: dict[str, pd.DataFrame]) -> dict:
     """Compute the full audit battery deterministically (22.2). These metrics are
     FIXED, so pure pandas beats LLM code-gen: instant, and it cannot crash the
@@ -1234,8 +1222,6 @@ def audit_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState
     except Exception:
         intro = ""
 
-    chart_path = _audit_chart(data.get("completion_by_game") or [], frames, state.get("steam_id"))
-
     g = data.get
     parts = ["## 🔍 Profile Audit"]
     if intro:
@@ -1287,8 +1273,8 @@ def audit_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState
     # Structured data + intro for rich (React) rendering; markdown `answer` is the fallback.
     audit_data = dict(data)
     audit_data["intro"] = intro
-    return {"answer": "\n".join(parts), "audit": audit_data,
-            "chart_path": chart_path, "done": True}
+    # The chart is client-rendered from audit_data["completion_by_game"] (19.2).
+    return {"answer": "\n".join(parts), "audit": audit_data, "done": True}
 
 
 def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:

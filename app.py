@@ -2,6 +2,7 @@
 Resolves the visitor's Steam profile, makes sure a snapshot exists, then calls
 agent.run() and renders: answer, chart, and reasoning trace.
 Keep this file thin. If agent logic creeps in, move it to agent/."""
+import pandas as pd
 import streamlit as st
 
 from agent import run, make_chart
@@ -139,22 +140,24 @@ def _render_trace(result: dict) -> None:
             st.code(raw)
 
 
-def _render_extras(result: dict, chart_path) -> None:
-    """Insight + chart + trace, shared by live and replayed turns."""
+def _render_extras(result: dict, chart_spec) -> None:
+    """Insight + chart + trace, shared by live and replayed turns. The chart is
+    a JSON spec (19.2) rendered natively — matplotlib is out of this path too."""
     if result.get("insight"):
         st.info(f"💡 {result['insight']}")
-    if chart_path:
-        st.image(chart_path)
+    if chart_spec and chart_spec.get("items"):
+        st.caption(f"📊 {chart_spec.get('title', 'Chart')}")
+        st.bar_chart(pd.DataFrame(chart_spec["items"]).set_index("label"), horizontal=True)
     if result.get("plan") or result.get("code_history"):
         _render_trace(result)
 
 
-# Replay the conversation so far (stored chart paths — no regeneration).
+# Replay the conversation so far (stored chart specs — no regeneration).
 for turn in st.session_state["chat"]:
     st.chat_message("user").write(turn["question"])
     with st.chat_message("assistant"):
         st.write(turn["result"].get("answer", "(no answer)"))
-        _render_extras(turn["result"], turn.get("chart_path"))
+        _render_extras(turn["result"], turn.get("chart"))
 
 question = st.chat_input("e.g. Which of my games am I closest to 100% on?")
 
@@ -172,13 +175,13 @@ if question:
         # Answer first (perceived speed), then the slower chart in a second pass.
         st.write(result.get("answer", "(no answer)"))
 
-        chart_path = result.get("chart_path")   # some nodes (e.g. audit) make their own
-        if not chart_path and result.get("chart_pending"):
+        chart_spec = None
+        if result.get("chart_pending"):
             with st.spinner("Generating chart..."):
-                chart_path = make_chart(result)
+                chart_spec = make_chart(result)
 
-        _render_extras(result, chart_path)
+        _render_extras(result, chart_spec)
 
     st.session_state["chat"].append(
-        {"question": question, "result": result, "chart_path": chart_path}
+        {"question": question, "result": result, "chart": chart_spec}
     )

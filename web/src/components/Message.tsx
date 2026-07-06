@@ -2,9 +2,10 @@ import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { assetUrl } from "../api";
-import type { AskResult } from "../types";
+import type { AskResult, ChartSpec } from "../types";
 import RoadmapCard from "./RoadmapCard";
 import AuditDashboard from "./AuditDashboard";
+import BarChart from "./BarChart";
 import ReasoningTrace from "./ReasoningTrace";
 
 type Props =
@@ -12,7 +13,8 @@ type Props =
   | {
       role: "assistant";
       result: AskResult;
-      chartUrl?: string | null;
+      chartSpec?: ChartSpec | null;
+      chartUrl?: string | null;   // legacy PNG (pre-19.2 replays only)
       chartLoading?: boolean;
       onAction?: (question: string) => void;
       retryQuestion?: string;
@@ -44,7 +46,7 @@ export default function Message(props: Props) {
     );
   }
 
-  const { result, chartUrl, chartLoading, onAction, retryQuestion, onRetry } = props;
+  const { result, chartSpec, chartUrl, chartLoading, onAction, retryQuestion, onRetry } = props;
   const hasSources = (result.sources?.length ?? 0) > 0;
 
   // Route-specific rich rendering; markdown is the fallback for everything else.
@@ -96,6 +98,7 @@ export default function Message(props: Props) {
             <span className="skeleton-label">📊 Generating chart…</span>
           </div>
         )}
+        {chartSpec && <BarChart spec={chartSpec} />}
         {chartUrl && (
           <img
             className="chart"

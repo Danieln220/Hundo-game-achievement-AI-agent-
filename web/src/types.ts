@@ -47,6 +47,14 @@ export interface AuditData {
   abandoned?: { game: string; pct: number; remaining: number }[];
   momentum?: { last_unlock?: string; unlocks_last_30d?: number };
   focus?: { game: string; remaining: number; pct: number };
+  completion_by_game?: { game: string; pct: number }[];
+}
+
+// Chart spec (19.2) — the backend returns data, the frontend draws it.
+export interface ChartSpec {
+  title?: string;
+  x_label?: string;
+  items: { label: string; value: number }[];
 }
 
 export interface AskResult {
@@ -64,7 +72,8 @@ export interface AskResult {
   roadmap?: RoadmapData | null;
   audit?: AuditData | null;
   chart_pending?: boolean;
-  chart_url?: string | null;
+  chart_url?: string | null;   // legacy PNG path — always null since 19.2
+  chart_spec?: ChartSpec | null;
   done?: boolean;
   steam_id?: string;
   question?: string;

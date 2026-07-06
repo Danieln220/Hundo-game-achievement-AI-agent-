@@ -25,7 +25,7 @@ from config import (
     RATE_LIMIT_ASK_PER_MIN, RATE_LIMIT_ASK_PER_DAY, RATE_LIMIT_SESSION_PER_MIN,
     SNAPSHOT_TTL_DAYS, PUBLIC_API_URL, FRONTEND_URL,
 )
-from agent import run, run_stream, make_chart, distill_memory
+from agent import run, run_stream, make_chart, distill_memory, fast_answer
 from data_layer import steam_client
 from data_layer import storage
 from data_layer import cache
@@ -455,6 +455,13 @@ def ask(req: AskReq):
     chart_url or chart_pending). For chart_pending answers, the client then calls
     /chart with this same result (answer-first UX)."""
     t0 = time.perf_counter()
+    # Deterministic fast-path (19.3): common shapes answered straight from the
+    # snapshot — no LLM, no memory read/update (nothing durable to distill).
+    fast = fast_answer(req.question, req.steam_id)
+    if fast:
+        db.log_query(req.steam_id, req.question, fast.get("route"),
+                     int((time.perf_counter() - t0) * 1000))
+        return _serialize(fast)
     mem = _memory_for(req.steam_id)
     result = run(
         req.question,
@@ -480,6 +487,13 @@ def ask_stream(req: AskReq):
     The client reads this as a stream (fetch + ReadableStream)."""
     def gen():
         t0 = time.perf_counter()
+        # Deterministic fast-path (19.3): instant single result event, no LLM.
+        fast = fast_answer(req.question, req.steam_id)
+        if fast:
+            db.log_query(req.steam_id, req.question, fast.get("route"),
+                         int((time.perf_counter() - t0) * 1000))
+            yield _sse("result", _serialize(fast))
+            return
         mem = _memory_for(req.steam_id)
         for kind, payload in run_stream(
             req.question,
@@ -503,8 +517,10 @@ def ask_stream(req: AskReq):
 
 @app.post("/chart")
 def chart(req: ChartReq):
-    """Second-pass chart generation for a prior /ask result."""
-    return {"chart_url": _chart_url(make_chart(req.result))}
+    """Second-pass chart generation for a prior /ask result. Returns a JSON
+    chart SPEC the frontend renders itself (19.2). chart_url is kept (always
+    null) so an older cached frontend fails soft during a deploy overlap."""
+    return {"chart_spec": make_chart(req.result), "chart_url": None}
 
 
 # Warm up the LLM connection on boot (first TLS handshake + model spin-up is the

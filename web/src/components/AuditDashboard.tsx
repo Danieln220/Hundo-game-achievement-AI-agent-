@@ -1,6 +1,7 @@
 import type { AuditData } from "../types";
 import { RarityChip, rarityTier } from "../rarity";
 import CompletionRing from "./CompletionRing";
+import BarChart from "./BarChart";
 
 const r = (n?: number | null) => Math.round(n ?? 0);
 
@@ -66,6 +67,17 @@ export default function AuditDashboard({
           📈 <b>Momentum:</b> last unlock {data.momentum.last_unlock} ·{" "}
           {data.momentum.unlocks_last_30d ?? 0} in 30 days
         </div>
+      )}
+
+      {/* Client-rendered from the audit data itself (19.2 — no PNG round-trip). */}
+      {!!data.completion_by_game?.length && (
+        <BarChart
+          spec={{
+            title: "Top games by completion",
+            x_label: "Completion %",
+            items: data.completion_by_game.map((g) => ({ label: g.game, value: g.pct })),
+          }}
+        />
       )}
 
       {!!data.easy_wins?.length && (
