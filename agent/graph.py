@@ -177,44 +177,10 @@ Rules: judge by name + description. Do NOT remove for difficulty/rarity ("easy"/
 handled elsewhere. When unsure whether an achievement matches the exclusion, KEEP it (don't list it).
 Never remove everything."""
 
-# The audit is a battery of INDEPENDENT analyses. Rather than have the model write
-# one huge script in a single ~60s+ call, each group below is generated and run
-# CONCURRENTLY (see audit_node) — same agent-writes-the-code design, far lower
-# wall-clock. Each group keeps the same per-call retry for reliability.
-_AUDIT_BASE = """You are a pandas expert computing part of a Steam profile audit.
-
-Pre-loaded (do NOT redefine, do NOT import): games, achievements, player_unlocks, pd, np, json.
-CRITICAL column meanings:
-- player_unlocks.achieved = whether THIS PLAYER unlocked the achievement.
-- achievements.rarity_pct = % of ALL players who unlocked it (float, may be NaN).
-- unlock_time = Unix seconds (use pd.to_datetime(x, unit='s') for dates).
-Only count games that HAVE achievements where a completion % is needed.
-"Started" = >=1 achievement unlocked. Output ONLY raw python (no markdown fences);
-assign the result via `result = json.dumps({...})` with EXACTLY the keys below."""
-
-_AUDIT_GROUPS: list[tuple[str, str, str]] = [   # (name, model, spec)
-    ("overview", DEEPSEEK_MODEL_FLASH, """{
-  "total_unlocked":   <int achievements the player has unlocked>,
-  "total_achievements": <int total achievements across games that have them>,
-  "overall_pct":      <float total_unlocked / total_achievements * 100>,
-  "games_total":      <int owned games>,
-  "games_started":    <int games with >=1 unlock>,
-  "games_completed":  <int games at 100%>
-}"""),
-    ("highlights", DEEPSEEK_MODEL_PRO, """{
-  "rarest":   {"name": <display_name>, "rarity_pct": <float>, "game": <game name>},  # rarest UNLOCKED
-  "easy_wins":[{"name":..., "rarity_pct":..., "game":...}, ...]   # 5 LOCKED achievements, highest rarity_pct
-}"""),
-    ("progress", DEEPSEEK_MODEL_PRO, """{
-  "abandoned":[{"game":..., "pct": <float>, "remaining": <int>}, ...],  # started, <10% complete, up to 5
-  "focus":    {"game":..., "remaining": <int>, "pct": <float>},   # started, <100%, FEWEST remaining
-  "momentum": {"last_unlock": <"YYYY-MM-DD" of most recent unlock>, "unlocks_last_30d": <int>}
-}
-For momentum use the player's unlocked rows only; "last 30 days" = within 30 days of the latest unlock."""),
-    ("chart", DEEPSEEK_MODEL_FLASH, """{
-  "completion_by_game":[{"game":..., "pct": <float>}, ...]   # top 10 games by completion %, for a chart
-}"""),
-]
+# The audit battery is FIXED metrics, so it is computed DETERMINISTICALLY in
+# pure pandas (22.2 — see _audit_metrics near audit_node). The LLM writes code
+# only for OPEN-ENDED questions (the analysis route), where that design earns
+# its cost; the audit spends exactly one LLM call, on the narrative intro.
 
 _HOWTO_SYSTEM = """You are a Steam achievement guide assistant.
 Given the user's question and a few web search snippets, write a practical,
@@ -304,6 +270,63 @@ def _extract_code(text: str) -> str:
     if match:
         return match.group(1).strip()
     return text.strip()
+
+
+_PLAN_LABEL_RE = re.compile(
+    r"^[\s>*_#`-]*(route|interpretation|clarify|plan|code)[\s*_`]*:\s*(.*)$",
+    re.IGNORECASE,
+)
+
+
+def _parse_plan_response(raw: str) -> tuple[str, str, str, str, str]:
+    """Tolerant parse of the planner's ROUTE/INTERPRETATION/CLARIFY/PLAN/CODE
+    response (22.7). startswith() parsing silently misrouted on '**ROUTE:**',
+    indentation, or case variants — route fell through to analysis with EMPTY
+    code (→ sandbox error → burned retry). Labels are matched through markdown
+    and whitespace, and a missing ROUTE line is LOGGED instead of passing
+    unnoticed. An all-lowercase label word ('code:' in prose or a plan bullet)
+    stays content. Returns (route, interpretation, clarify, plan, code)."""
+    route, interpretation, clarify = "analysis", "", ""
+    route_seen = False
+    plan_lines: list[str] = []
+    code_lines: list[str] = []
+    section = None
+    for line in raw.splitlines():
+        m = _PLAN_LABEL_RE.match(line)
+        label = m.group(1).upper() if m and not m.group(1).islower() else None
+        if label == "ROUTE":
+            section, route_seen = None, True
+            low = (m.group(2) or line).lower()
+            for name in ("howto", "clarify", "chitchat", "roadmap", "audit", "timecost"):
+                if name in low:
+                    route = name
+                    break
+            else:
+                route = "analysis"
+        elif label == "INTERPRETATION":
+            section = None
+            val = m.group(2).strip().strip("*").strip()
+            interpretation = "" if val.upper() == "NONE" else val
+        elif label == "CLARIFY":
+            section = None
+            val = m.group(2).strip().strip("*").strip()
+            clarify = "" if val.upper() == "NONE" else val
+        elif label == "PLAN":
+            section = "plan"
+            if m.group(2).strip():
+                plan_lines.append(m.group(2).strip())
+        elif label == "CODE":
+            section = "code"
+            if m.group(2).strip():
+                code_lines.append(m.group(2))
+        elif section == "plan" and line.strip():
+            plan_lines.append(line.strip())
+        elif section == "code":
+            code_lines.append(line)
+
+    if not route_seen:
+        print(f"[plan] no ROUTE line parsed — defaulting to analysis; head: {raw[:120]!r}")
+    return route, interpretation, clarify, "\n".join(plan_lines), "\n".join(code_lines)
 
 
 def _format_history(state: AgentState, limit: int = 4) -> str:
@@ -446,55 +469,20 @@ def plan_code_node(state: AgentState) -> AgentState:
     )
     raw = call_llm(prompt, model=DEEPSEEK_MODEL_PRO, system=_PLAN_CODE_SYSTEM)
 
-    # Parse the structured response.
-    route, interpretation, clarify = "analysis", "", ""
-    plan_lines, code_lines, section = [], [], None
-    for line in raw.splitlines():
-        if line.startswith("ROUTE:"):
-            section = None
-            low = line.lower()
-            if "howto" in low:
-                route = "howto"
-            elif "clarify" in low:
-                route = "clarify"
-            elif "chitchat" in low:
-                route = "chitchat"
-            elif "roadmap" in low:
-                route = "roadmap"
-            elif "audit" in low:
-                route = "audit"
-            elif "timecost" in low:
-                route = "timecost"
-            else:
-                route = "analysis"
-        elif line.startswith("INTERPRETATION:"):
-            section = None
-            val = line.split(":", 1)[1].strip()
-            interpretation = "" if val.upper() == "NONE" else val
-        elif line.startswith("CLARIFY:"):
-            section = None
-            val = line.split(":", 1)[1].strip()
-            clarify = "" if val.upper() == "NONE" else val
-        elif line.startswith("PLAN:"):
-            section = "plan"
-        elif line.startswith("CODE:"):
-            section = "code"
-        elif section == "plan" and line.strip():
-            plan_lines.append(line.strip())
-        elif section == "code":
-            code_lines.append(line)
+    # Tolerant structured-response parse (22.7) — see _parse_plan_response.
+    route, interpretation, clarify, plan, code_text = _parse_plan_response(raw)
 
     if route == "clarify" and not clarify:
         route = "analysis"
 
     out: AgentState = {
-        "plan": "\n".join(plan_lines),
+        "plan": plan,
         "route": route,
         "interpretation": interpretation,
         "clarify_question": clarify,
     }
     if route == "analysis":
-        code = _extract_code("\n".join(code_lines))
+        code = _extract_code(code_text)
         out["last_code"] = code
         out["code_history"] = [code]
     return out
@@ -1151,52 +1139,89 @@ def _audit_chart(cbg: list, frames: dict, steam_id: Optional[str]) -> Optional[s
     return cp if (not err and Path(cp).exists()) else None
 
 
-def _audit_group(state: AgentState, frames: dict[str, pd.DataFrame], model: str, spec: str) -> tuple[dict, str]:
-    """Generate + run ONE audit metric-group (the agent still writes the code).
-    `model` is per-group: simple groups use FLASH (faster+cheaper), complex ones PRO.
-    Keeps a 2-try retry on a crash / invalid JSON. Returns (partial_data, code);
-    partial_data is {} on failure so the rest of the audit degrades gracefully."""
-    system = f"{_AUDIT_BASE}\n\nReturn EXACTLY these keys:\n{spec}"
-    code, err_ctx = "", ""
-    for _ in range(2):
-        prompt = f"Schema:\n{state['schema']}\n\n{err_ctx}Compute the requested audit metrics."
-        raw = call_llm(prompt, model=model, system=system)
-        code = _extract_code(raw)
-        result, error = run_user_code(code, frames, state.get("steam_id"))
-        if error:
-            err_ctx = f"Your previous code FAILED — fix it:\n{error}\n\n"
-            continue
-        try:
-            return json.loads(result), code
-        except Exception as exc:
-            err_ctx = f"Your previous result was not valid JSON ({exc}). Return json.dumps(...).\n\n"
-    return {}, code
+def _audit_metrics(frames: dict[str, pd.DataFrame]) -> dict:
+    """Compute the full audit battery deterministically (22.2). These metrics are
+    FIXED, so pure pandas beats LLM code-gen: instant, and it cannot crash the
+    sandbox or return bad JSON. Keys and shapes match the old _AUDIT_GROUPS
+    exactly, so the API response and the React AuditDashboard are unchanged."""
+    games, ach, pu = frames["games"], frames["achievements"], frames["player_unlocks"]
+    merged = ach.merge(pu[["appid", "api_name", "achieved", "unlock_time"]],
+                       on=["appid", "api_name"], how="left")
+    merged["achieved"] = merged["achieved"].fillna(False).astype(bool)
+    gname = dict(zip(games["appid"], games["name"].astype(str)))
+
+    total_ach = int(len(merged))
+    total_unlocked = int(merged["achieved"].sum())
+
+    per = merged.groupby("appid").agg(
+        total=("achieved", "size"), unlocked=("achieved", "sum")).reset_index()
+    per["pct"] = per["unlocked"] / per["total"] * 100
+    started = per[per["unlocked"] > 0]
+
+    data: dict = {
+        "total_unlocked": total_unlocked,
+        "total_achievements": total_ach,
+        "overall_pct": float(total_unlocked / total_ach * 100) if total_ach else 0.0,
+        "games_total": int(len(games)),
+        "games_started": int(len(started)),
+        "games_completed": int(((per["unlocked"] >= per["total"]) & (per["total"] > 0)).sum()),
+    }
+
+    have = merged[merged["achieved"] & merged["rarity_pct"].notna()]
+    if not have.empty:
+        r = have.loc[have["rarity_pct"].idxmin()]
+        data["rarest"] = {"name": str(r["display_name"]), "rarity_pct": float(r["rarity_pct"]),
+                          "game": gname.get(r["appid"], str(r["appid"]))}
+
+    locked = merged[~merged["achieved"] & merged["rarity_pct"].notna()]
+    data["easy_wins"] = [
+        {"name": str(row.display_name), "rarity_pct": float(row.rarity_pct),
+         "game": gname.get(row.appid, str(row.appid))}
+        for row in locked.sort_values("rarity_pct", ascending=False).head(5).itertuples(index=False)
+    ]
+
+    data["abandoned"] = [
+        {"game": gname.get(row.appid, str(row.appid)), "pct": float(row.pct),
+         "remaining": int(row.total - row.unlocked)}
+        for row in started[started["pct"] < 10].sort_values("pct").head(5).itertuples(index=False)
+    ]
+
+    inprog = started[started["pct"] < 100]
+    if not inprog.empty:
+        f = inprog.assign(remaining=inprog["total"] - inprog["unlocked"]).sort_values("remaining").iloc[0]
+        data["focus"] = {"game": gname.get(f["appid"], str(f["appid"])),
+                         "remaining": int(f["remaining"]), "pct": float(f["pct"])}
+
+    unlocks = merged.loc[merged["achieved"] & (merged["unlock_time"] > 0), "unlock_time"]
+    if not unlocks.empty:
+        last = int(unlocks.max())
+        data["momentum"] = {
+            "last_unlock": pd.to_datetime(last, unit="s").strftime("%Y-%m-%d"),
+            "unlocks_last_30d": int((unlocks >= last - 30 * 86400).sum()),
+        }
+
+    data["completion_by_game"] = [
+        {"game": gname.get(row.appid, str(row.appid)), "pct": float(round(row.pct, 1))}
+        for row in per.sort_values("pct", ascending=False).head(10).itertuples(index=False)
+    ]
+    return data
 
 
 def audit_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
-    """Flagship: autonomous profile audit. The agent writes the analysis code, but
-    the battery is split into INDEPENDENT metric groups generated + run CONCURRENTLY
-    (instead of one ~60s+ mega-call), then synthesized into a structured, charted
-    report — multi-step analysis orchestrated behind a single request."""
-    # Generate every group in parallel; each keeps its own retry. Threads give real
-    # parallelism here because both the LLM HTTP call and the sandbox subprocess
-    # release the GIL while they wait.
-    with ThreadPoolExecutor(max_workers=len(_AUDIT_GROUPS)) as ex:
-        results = list(ex.map(
-            lambda g: _audit_group(state, frames, g[1], g[2]), _AUDIT_GROUPS
-        ))
-
-    data: dict = {}
-    codes: list[str] = []
-    for partial, code in results:
-        data.update(partial)
-        if code:
-            codes.append(code)
+    """Flagship: autonomous profile audit. The metric battery is FIXED, so it is
+    computed deterministically in pure pandas (22.2) — instant, and it cannot
+    crash the sandbox or return bad JSON. The LLM is spent only where it adds
+    value: the one-sentence narrative intro. (Open-ended questions keep the
+    agent-writes-the-code design on the analysis route.)"""
+    try:
+        data = _audit_metrics(frames)
+    except Exception as exc:
+        print(f"[audit] metric computation failed: {exc}")
+        data = {}
 
     if not data:
         return {
             "answer": "I couldn't build an audit right now — please try again.",
-            "code_history": codes,
             "done": True,
         }
 
@@ -1263,7 +1288,7 @@ def audit_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState
     audit_data = dict(data)
     audit_data["intro"] = intro
     return {"answer": "\n".join(parts), "audit": audit_data,
-            "chart_path": chart_path, "code_history": codes, "done": True}
+            "chart_path": chart_path, "done": True}
 
 
 def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:

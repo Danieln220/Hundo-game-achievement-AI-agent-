@@ -2,7 +2,7 @@
   {
     "id": "q01",
     "question": "How many achievements have I unlocked in total across all games?",
-    "expected": "683",
+    "expected": "685",
     "type": "count"
   },
   {
@@ -96,9 +96,9 @@
   {
     "id": "q15",
     "question": "What was the most recent achievement I unlocked and in which game?",
-    "expected": "Rank 3,War Thunder",
+    "expected": "A Rest For The Wicked,Ready or Not",
     "type": "lookup",
-    "notes": "Unlocked 2026-05-26"
+    "notes": "Unlocked 2026-06-07"
   },
   {
     "id": "q16",
@@ -156,8 +156,8 @@
   {
     "id": "q24",
     "question": "Give me a full audit of my profile",
-    "expected": "683,Finnish Ace",
+    "expected": "685,Finnish Ace",
     "type": "audit",
-    "notes": "Flagship audit: 683 total unlocked, rarest flex Finnish Ace (1.3%)"
+    "notes": "Flagship audit: 685 total unlocked, rarest flex Finnish Ace (1.3%)"
   }
 ]

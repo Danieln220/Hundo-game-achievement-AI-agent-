@@ -8,6 +8,7 @@ Both the Streamlit app (now) and the future FastAPI backend import this:
 Keep ALL UI code out of this package. If app.py stays thin and only calls
 run(), the React + FastAPI upgrade is 'wrap run() in an endpoint', not a
 rewrite."""
+import re
 from typing import Optional
 
 from config import STEAM_ID, DEEPSEEK_MODEL_FLASH
@@ -33,9 +34,28 @@ _TRIAGE_REPLY_SYSTEM = (
 )
 
 
+# Cheap pre-gate (22.1): only spend the triage LLM call when the message LOOKS
+# like small-talk — short, no digits, none of the words a data question uses.
+# A false negative here is safe (the planner's chitchat route still catches it);
+# the win is that every REAL question skips a whole LLM round-trip.
+_DATA_WORDS = re.compile(
+    r"achiev|game|unlock|complet|rarest|rarity|steam|play|trophy|roadmap|audit"
+    r"|profile|library|hour|percent|%|how long|backlog|grind",
+    re.IGNORECASE,
+)
+
+
+def _maybe_smalltalk(question: str) -> bool:
+    q = question.strip()
+    return len(q.split()) <= 8 and not any(c.isdigit() for c in q) and not _DATA_WORDS.search(q)
+
+
 def _smalltalk_reply(question: str) -> Optional[str]:
-    """One cheap Flash call. Returns a greeting/small-talk reply, or None if the
-    message is a real data question (the model emits the __DATA__ sentinel)."""
+    """One cheap Flash call — made ONLY for messages that pass _maybe_smalltalk.
+    Returns a greeting/small-talk reply, or None if the message should go to the
+    pipeline (it looks like a data question, or the model emits the sentinel)."""
+    if not _maybe_smalltalk(question):
+        return None
     try:
         resp = call_llm(question, model=DEEPSEEK_MODEL_FLASH, system=_TRIAGE_REPLY_SYSTEM).strip()
     except Exception:
@@ -108,14 +128,24 @@ def run(
         }
 
     app = build_graph(frames)
-    return app.invoke({
-        "question": question,
-        "steam_id": steam_id,
-        "history": history or [],
-        "with_insight": with_insight,
-        "memory": memory,
-        "retries": 0,
-    })
+    try:
+        return app.invoke({
+            "question": question,
+            "steam_id": steam_id,
+            "history": history or [],
+            "with_insight": with_insight,
+            "memory": memory,
+            "retries": 0,
+        })
+    except Exception as exc:
+        # A node raise (e.g. the LLM client giving up after its retries) must
+        # degrade to a normal answer, not a raw 500 — run_stream already does
+        # this; run() gets the same boundary. (22.8)
+        return {
+            "answer": "⚠️ Something went wrong while working on that — please try again in a moment.",
+            "error": str(exc),
+            "done": True,
+        }
 
 
 def run_stream(
