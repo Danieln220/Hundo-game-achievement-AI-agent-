@@ -48,6 +48,16 @@ EXEC_TIMEOUT_SECONDS = int(os.environ.get("EXEC_TIMEOUT_SECONDS", "10"))
 EXEC_MEMORY_MB = int(os.environ.get("EXEC_MEMORY_MB", "2048"))
 EXEC_MAX_OUTPUT_CHARS = 20000  # truncate sandbox result so a huge dump can't flood the UI
 LLM_TIMEOUT_SECONDS = 60   # per-call timeout for the LLM client
+
+# ── LLM cost floor (Step 19.4) ────────────────────────────────────────────────
+# Global max_tokens ceiling for every LLM call — nothing bounded a runaway
+# response before (22.6). Cheap call sites pass smaller explicit values.
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "4096"))
+# Redis-backed answer cache for /ask: identical question + same user + same
+# snapshot build + same memory → serve the stored result, zero LLM cost.
+# 0 disables. Keyed on the snapshot's build marker, so a rebuild invalidates
+# naturally without any explicit flush.
+ANSWER_CACHE_TTL_SECONDS = int(os.environ.get("ANSWER_CACHE_TTL_SECONDS", "21600"))  # 6h
 SNAPSHOT_DIR = "data/snapshot"  # base dir; each user gets a <steam_id>/ subdir
 
 # Disposable charts: generated PNGs are regenerable from the snapshot, so the API

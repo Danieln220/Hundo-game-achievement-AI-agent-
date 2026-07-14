@@ -72,10 +72,30 @@ def _g(ctx: dict, appid) -> str:
     return ctx["gname"].get(appid, str(appid))
 
 
+# "one" is deliberately absent — "which one…" is not a list request, and the
+# default is already 1.
+_NUM_WORDS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+              "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+
+
+def _count_in(q: str) -> int:
+    """Requested list size ('top 3', 'three games', 'last 5 unlocks'); 1 when none
+    is asked for. Capped at 10. Call with the game name already stripped so a
+    title like 'Left 4 Dead 2' can't supply the number; '50%'-style figures don't
+    count either."""
+    m = re.search(r"\b(\d{1,2})\b(?!\s*%)", q)
+    if m:
+        return max(1, min(int(m.group(1)), 10))
+    for w, n in _NUM_WORDS.items():
+        if re.search(rf"\b{w}\b", q, re.IGNORECASE):
+            return n
+    return 1
+
+
 # ── shape computes ────────────────────────────────────────────────────────────
 
 def _rarest(q, ctx):
-    appid, _, ok = _scope(q, ctx)
+    appid, qq, ok = _scope(q, ctx)
     if not ok:
         return None
     have = ctx["m"][ctx["m"]["achieved"] & ctx["m"]["rarity_pct"].notna()]
@@ -83,8 +103,7 @@ def _rarest(q, ctx):
         have = have[have["appid"] == appid]
     if have.empty:
         return None
-    n_match = re.search(r"\btop\s*(\d+)\b|\b(\d+)\s+rarest\b", q, re.IGNORECASE)
-    n = min(int(n_match.group(1) or n_match.group(2)), 10) if n_match else 1
+    n = _count_in(qq)
     rows = have.sort_values("rarity_pct").head(n)
     if n == 1:
         r = rows.iloc[0]
@@ -110,8 +129,12 @@ def _most_common(q, ctx):
             f"**{_g(ctx, r['appid'])}** — {_p(r['rarity_pct'])} of players have it.")
 
 
+def _when(ts) -> str:
+    return pd.to_datetime(int(ts), unit="s").strftime("%Y-%m-%d")
+
+
 def _recent(q, ctx):
-    appid, _, ok = _scope(q, ctx)
+    appid, qq, ok = _scope(q, ctx)
     if not ok:
         return None
     u = ctx["m"][ctx["m"]["achieved"] & (ctx["m"]["unlock_time"] > 0)]
@@ -119,10 +142,24 @@ def _recent(q, ctx):
         u = u[u["appid"] == appid]
     if u.empty:
         return None
+    n = _count_in(qq)
+    if n > 1:
+        latest = u.sort_values("unlock_time", ascending=False)
+        # "which three GAMES most recently…" → N distinct games (latest unlock
+        # in each); otherwise the plain last-N unlocks.
+        if appid is None and re.search(r"\bgames?\b", qq, re.IGNORECASE):
+            rows = latest.drop_duplicates("appid").head(n)
+            lines = [f"- **{_g(ctx, r.appid)}** — {r.display_name}, {_when(r.unlock_time)}"
+                     for r in rows.itertuples(index=False)]
+            return (f"Your {len(lines)} most recently active games (latest unlock in each):\n"
+                    + "\n".join(lines))
+        rows = latest.head(n)
+        lines = [f"- **{r.display_name}** in {_g(ctx, r.appid)}, {_when(r.unlock_time)}"
+                 for r in rows.itertuples(index=False)]
+        return f"Your {len(lines)} most recent unlocks:\n" + "\n".join(lines)
     r = u.loc[u["unlock_time"].idxmax()]
-    when = pd.to_datetime(int(r["unlock_time"]), unit="s").strftime("%Y-%m-%d")
     return (f"Your most recent unlock is **{r['display_name']}** in "
-            f"**{_g(ctx, r['appid'])}**, on {when}.")
+            f"**{_g(ctx, r['appid'])}**, on {_when(r['unlock_time'])}.")
 
 
 def _hidden(q, ctx):

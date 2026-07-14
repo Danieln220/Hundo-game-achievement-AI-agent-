@@ -111,6 +111,19 @@ def has_snapshot(steam_id: str = STEAM_ID) -> bool:
     return False
 
 
+def snapshot_version(steam_id: str = STEAM_ID) -> str | None:
+    """Cheap identity of the CURRENT snapshot build (local marker mtime) — used to
+    key the answer cache (19.4) so a rebuild invalidates it naturally. Local-only
+    on purpose: no network on the /ask hot path. Before the local cache is
+    hydrated (first request on a fresh instance) it returns None → caller just
+    skips caching for that one request."""
+    marker = _resolve_snapshot_dir(steam_id) / "owned_games.json"
+    try:
+        return str(int(marker.stat().st_mtime))
+    except OSError:
+        return None
+
+
 def snapshot_age_days(steam_id: str = STEAM_ID) -> float | None:
     """Age of this user's snapshot in days, or None if there is none."""
     marker = _resolve_snapshot_dir(steam_id) / "owned_games.json"

@@ -15,7 +15,7 @@ from config import STEAM_ID, DEEPSEEK_MODEL_FLASH
 from data_layer.snapshot import load_frames
 from .graph import build_graph, generate_chart_spec
 from .fastpath import fast_answer  # noqa: F401 — public seam (API calls it before run())
-from .llm import call_llm
+from .llm import call_llm, new_usage, use_usage, reset_usage, call_with_usage
 
 # The AI itself decides whether a message is small-talk vs a real data question —
 # no hardcoded word lists. ONE cheap Flash call either returns a friendly reply, or
@@ -58,7 +58,8 @@ def _smalltalk_reply(question: str) -> Optional[str]:
     if not _maybe_smalltalk(question):
         return None
     try:
-        resp = call_llm(question, model=DEEPSEEK_MODEL_FLASH, system=_TRIAGE_REPLY_SYSTEM).strip()
+        resp = call_llm(question, model=DEEPSEEK_MODEL_FLASH, system=_TRIAGE_REPLY_SYSTEM,
+                        max_tokens=150).strip()
     except Exception:
         return None  # on any failure, fall through to the normal pipeline
     return None if _DATA_TOKEN in resp else resp
@@ -85,7 +86,8 @@ def distill_memory(current: str, question: str, answer: str) -> str:
             f"Latest exchange:\nUser: {question}\nAssistant: {answer}\n\n"
             "Return the updated memory."
         )
-        out = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_MEMORY_SYSTEM).strip()
+        out = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_MEMORY_SYSTEM,
+                       max_tokens=400).strip()
         return (out or current)[:1500]
     except Exception:
         return current
@@ -111,42 +113,52 @@ def run(
     if not question or not question.strip():
         return {"answer": "Please enter a question.", "done": True}
 
-    # Small-talk → one fast Flash reply, skip the analysis pipeline (AI decides).
-    reply = _smalltalk_reply(question)
-    if reply:
-        return {"answer": reply, "done": True}
-
-    steam_id = steam_id or STEAM_ID
-    frames = load_frames(steam_id)
-
-    if not frames or all(df.empty for df in frames.values()):
-        return {
-            "answer": (
-                "No snapshot data found for this profile. Build it first "
-                "(the app does this automatically when you enter a Steam ID)."
-            ),
-            "done": True,
-        }
-
-    app = build_graph(frames)
+    # Per-run token accounting (19.4/22.6). LangGraph's executor propagates the
+    # contextvar into its workers; totals land on the result as `llm_usage`.
+    usage = new_usage()
+    token = use_usage(usage)
     try:
-        return app.invoke({
-            "question": question,
-            "steam_id": steam_id,
-            "history": history or [],
-            "with_insight": with_insight,
-            "memory": memory,
-            "retries": 0,
-        })
-    except Exception as exc:
-        # A node raise (e.g. the LLM client giving up after its retries) must
-        # degrade to a normal answer, not a raw 500 — run_stream already does
-        # this; run() gets the same boundary. (22.8)
-        return {
-            "answer": "⚠️ Something went wrong while working on that — please try again in a moment.",
-            "error": str(exc),
-            "done": True,
-        }
+        # Small-talk → one fast Flash reply, skip the analysis pipeline (AI decides).
+        reply = _smalltalk_reply(question)
+        if reply:
+            return {"answer": reply, "done": True, "llm_usage": dict(usage)}
+
+        steam_id = steam_id or STEAM_ID
+        frames = load_frames(steam_id)
+
+        if not frames or all(df.empty for df in frames.values()):
+            return {
+                "answer": (
+                    "No snapshot data found for this profile. Build it first "
+                    "(the app does this automatically when you enter a Steam ID)."
+                ),
+                "done": True,
+            }
+
+        app = build_graph(frames)
+        try:
+            result = app.invoke({
+                "question": question,
+                "steam_id": steam_id,
+                "history": history or [],
+                "with_insight": with_insight,
+                "memory": memory,
+                "retries": 0,
+            })
+            result["llm_usage"] = dict(usage)
+            return result
+        except Exception as exc:
+            # A node raise (e.g. the LLM client giving up after its retries) must
+            # degrade to a normal answer, not a raw 500 — run_stream already does
+            # this; run() gets the same boundary. (22.8)
+            return {
+                "answer": "⚠️ Something went wrong while working on that — please try again in a moment.",
+                "error": str(exc),
+                "done": True,
+                "llm_usage": dict(usage),
+            }
+    finally:
+        reset_usage(token)
 
 
 def run_stream(
@@ -163,9 +175,14 @@ def run_stream(
         yield "result", {"answer": "Please enter a question.", "done": True}
         return
 
-    reply = _smalltalk_reply(question)
+    # Per-run token accounting (19.4/22.6). NOT set on this generator's own
+    # context — a generator's contextvar changes would linger in the consuming
+    # thread between yields. Instead the two call sites are wrapped explicitly.
+    usage = new_usage()
+
+    reply = call_with_usage(usage, _smalltalk_reply, question)
     if reply:
-        yield "result", {"answer": reply, "done": True}
+        yield "result", {"answer": reply, "done": True, "llm_usage": dict(usage)}
         return
 
     steam_id = steam_id or STEAM_ID
@@ -207,13 +224,16 @@ def run_stream(
         finally:
             q.put(("__done__", None))
 
-    _threading.Thread(target=_worker, daemon=True).start()
+    _threading.Thread(target=call_with_usage, args=(usage, _worker), daemon=True).start()
     while True:
         kind, payload = q.get()
         if kind == "__done__":
             break
         yield kind, payload
-    yield "result", holder.get("final", {})
+    final = holder.get("final", {})
+    if isinstance(final, dict):
+        final["llm_usage"] = dict(usage)
+    yield "result", final
 
 
 def make_chart(result: dict) -> Optional[dict]:

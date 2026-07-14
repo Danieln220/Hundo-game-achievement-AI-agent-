@@ -7,6 +7,7 @@ Run locally:
     uvicorn api.main:app --reload --port 8000
 Then open http://localhost:8000/docs for the auto-generated API.
 """
+import hashlib
 import json
 import re
 import urllib.parse
@@ -23,7 +24,7 @@ from pydantic import BaseModel
 from config import (
     CORS_ORIGINS, CHART_TTL_HOURS, CHART_MAX_FILES, missing_secrets,
     RATE_LIMIT_ASK_PER_MIN, RATE_LIMIT_ASK_PER_DAY, RATE_LIMIT_SESSION_PER_MIN,
-    SNAPSHOT_TTL_DAYS, PUBLIC_API_URL, FRONTEND_URL,
+    SNAPSHOT_TTL_DAYS, PUBLIC_API_URL, FRONTEND_URL, ANSWER_CACHE_TTL_SECONDS,
 )
 from agent import run, run_stream, make_chart, distill_memory, fast_answer
 from data_layer import steam_client
@@ -36,6 +37,7 @@ import time
 from data_layer.resolver import resolve_steam_id, SteamResolveError
 from data_layer.snapshot import (
     ensure_snapshot, has_snapshot, load_frames, clear_snapshot, PrivateProfileError,
+    snapshot_version,
 )
 
 import threading
@@ -160,6 +162,66 @@ def _serialize(result: dict) -> dict:
     out = {k: v for k, v in result.items() if k not in _DROP_FIELDS}
     out["chart_url"] = _chart_url(out.pop("chart_path", None))
     return out
+
+
+# ── Answer cache (Step 19.4) ──────────────────────────────────────────────────
+# Identical question + same user + same snapshot build + same memory → serve the
+# stored result from Redis, zero LLM cost. Sits BEHIND the fast-path (which is
+# already free) and only in api/ — run() stays pure, eval untouched. Fail-open
+# like everything else on the cache: any miss/hiccup just runs the agent.
+
+# Never cache: small-talk (no route), clarifying questions, or chitchat — they're
+# either dialogue-dependent or already one cheap Flash call.
+_UNCACHEABLE_ROUTES = {"", "chitchat", "clarify"}
+
+
+def _norm_question(q: str) -> str:
+    return re.sub(r"\s+", " ", (q or "").strip().lower()).strip(" ?!.")
+
+
+def _answer_cache_key(req: "AskReq", memory: str) -> Optional[str]:
+    """Cache key, or None when this request shouldn't touch the cache: caching is
+    disabled, it's a follow-up (history changes the answer), or the snapshot has
+    no local build marker yet. Memory is hashed in so a personalization change
+    misses instead of serving a stale-toned answer."""
+    if ANSWER_CACHE_TTL_SECONDS <= 0 or req.history:
+        return None
+    sid = req.steam_id or "default"
+    ver = snapshot_version(req.steam_id) if req.steam_id else snapshot_version()
+    if not ver:
+        return None
+    h = hashlib.sha1(
+        f"{_norm_question(req.question)}|{memory}|{int(req.with_insight)}".encode()
+    ).hexdigest()
+    return f"ans:{sid}:{ver}:{h}"
+
+
+def _answer_cache_get(key: Optional[str]) -> Optional[dict]:
+    if not key:
+        return None
+    raw = cache.get(key)
+    if not raw:
+        return None
+    try:
+        out = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    out.pop("llm_usage", None)  # those tokens were spent by the ORIGINAL request
+    out["cached"] = True
+    return out
+
+
+def _answer_cache_put(key: Optional[str], serialized: dict) -> None:
+    """Store a serialized /ask response — only clean, grounded answers."""
+    if not key:
+        return
+    route = serialized.get("route") or ""
+    if route in _UNCACHEABLE_ROUTES or serialized.get("error") or not serialized.get("answer"):
+        return
+    try:
+        cache.set(key, json.dumps(serialized), ANSWER_CACHE_TTL_SECONDS)
+    except (TypeError, ValueError):
+        pass  # non-serializable payload → just don't cache it
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -463,6 +525,14 @@ def ask(req: AskReq):
                      int((time.perf_counter() - t0) * 1000))
         return _serialize(fast)
     mem = _memory_for(req.steam_id)
+    # Answer cache (19.4): a repeat of a cached question skips the agent entirely.
+    ckey = _answer_cache_key(req, mem)
+    hit = _answer_cache_get(ckey)
+    if hit:
+        db.log_query(req.steam_id, req.question, f"cached:{hit.get('route') or ''}",
+                     int((time.perf_counter() - t0) * 1000))
+        _update_memory_bg(req.steam_id, req.question, hit.get("answer"), mem)
+        return hit
     result = run(
         req.question,
         steam_id=req.steam_id,
@@ -471,9 +541,11 @@ def ask(req: AskReq):
         memory=mem,
     )
     db.log_query(req.steam_id, req.question, result.get("route"),
-                 int((time.perf_counter() - t0) * 1000))
+                 int((time.perf_counter() - t0) * 1000), usage=result.get("llm_usage"))
     _update_memory_bg(req.steam_id, req.question, result.get("answer"), mem)
-    return _serialize(result)
+    out = _serialize(result)
+    _answer_cache_put(ckey, out)
+    return out
 
 
 def _sse(event: str, data: dict) -> str:
@@ -495,6 +567,15 @@ def ask_stream(req: AskReq):
             yield _sse("result", _serialize(fast))
             return
         mem = _memory_for(req.steam_id)
+        # Answer cache (19.4): a hit is a single instant result event, no agent.
+        ckey = _answer_cache_key(req, mem)
+        hit = _answer_cache_get(ckey)
+        if hit:
+            db.log_query(req.steam_id, req.question, f"cached:{hit.get('route') or ''}",
+                         int((time.perf_counter() - t0) * 1000))
+            _update_memory_bg(req.steam_id, req.question, hit.get("answer"), mem)
+            yield _sse("result", hit)
+            return
         for kind, payload in run_stream(
             req.question,
             steam_id=req.steam_id,
@@ -508,9 +589,12 @@ def ask_stream(req: AskReq):
                 yield _sse("token", {"text": payload})
             else:
                 db.log_query(req.steam_id, req.question, payload.get("route"),
-                             int((time.perf_counter() - t0) * 1000))
+                             int((time.perf_counter() - t0) * 1000),
+                             usage=payload.get("llm_usage"))
                 _update_memory_bg(req.steam_id, req.question, payload.get("answer"), mem)
-                yield _sse("result", _serialize(payload))
+                out = _serialize(payload)
+                _answer_cache_put(ckey, out)
+                yield _sse("result", out)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

@@ -23,7 +23,7 @@ from langgraph.graph import START, END, StateGraph
 from config import MAX_RETRIES, DEEPSEEK_MODEL_PRO, DEEPSEEK_MODEL_FLASH
 from data_layer import steam_client
 from .sandbox import run_user_code
-from .llm import call_llm
+from .llm import call_llm, call_with_usage, current_usage
 from .search import web_search, cached_search, cached_json
 
 
@@ -474,8 +474,8 @@ def plan_code_node(state: AgentState) -> AgentState:
         f"Schema:\n{state['schema']}\n\n"
         f"{_memory_line(state)}"
         f"{_format_history(state)}"
-        f"{error_context}\n"
-        f"Question: {state['question']}"
+        f"Question: {state['question']}\n"
+        f"{error_context}"
     )
     raw = call_llm(prompt, model=DEEPSEEK_MODEL_PRO, system=_PLAN_CODE_SYSTEM)
 
@@ -544,7 +544,8 @@ def clarify_node(state: AgentState) -> AgentState:
 def chitchat_node(state: AgentState) -> AgentState:
     """Greeting / small-talk that the regex fast-path didn't catch — answer with a
     single friendly Flash reply instead of running the analysis pipeline."""
-    answer = call_llm(state["question"], model=DEEPSEEK_MODEL_FLASH, system=_CHITCHAT_SYSTEM)
+    answer = call_llm(state["question"], model=DEEPSEEK_MODEL_FLASH, system=_CHITCHAT_SYSTEM,
+                      max_tokens=200)
     return {"answer": answer, "done": True}
 
 
@@ -558,7 +559,7 @@ def _run_verify(state: AgentState) -> Optional[str]:
         f"Code that ran:\n{state.get('last_code', '')}\n\n"
         f"Result: {state['last_result']}"
     )
-    resp = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_VERIFY_SYSTEM)
+    resp = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_VERIFY_SYSTEM, max_tokens=300)
 
     retry, reason = False, ""
     for line in resp.splitlines():
@@ -668,7 +669,8 @@ def time_estimate_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> Ag
             f"{_format_history(state)}"
             f"Question: {state['question']}"
         )
-        title = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_NAME_SYSTEM).strip()
+        title = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_NAME_SYSTEM,
+                         max_tokens=50).strip()
         if title and title.upper() != "NONE":
             m2 = _fuzzy_owned(title, frames["games"])
             if m2:  # a game they own (matched through a typo/partial name)
@@ -956,7 +958,7 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
     if not _match_owned_game(q, games_df):
         title = call_llm(
             f"{_format_history(state)}Question: {q}",
-            model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_NAME_SYSTEM,
+            model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_NAME_SYSTEM, max_tokens=50,
         ).strip()
         if title and title.upper() != "NONE" and not _fuzzy_owned(title, games_df):
             unowned_target = title
@@ -1297,24 +1299,29 @@ def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSt
 
     interp = state.get("interpretation")
     interp_line = f"INTERPRETATION (mention briefly): {interp}\n" if interp else ""
+    # Stable-per-user content (date, memory) FIRST, per-question content last —
+    # keeps the longest possible shared prefix for DeepSeek's context cache (19.4).
     finalize_prompt = (
         f"Today's date is {date.today().isoformat()}. Dates in 2026 on or before today are recent "
         "and valid — do NOT call them 'future dates' or data errors.\n\n"
-        f"Question: {state['question']}\n\n"
         f"{_memory_line(state)}"
+        f"Question: {state['question']}\n\n"
         f"{interp_line}"
         f"Computed result:\n{state['last_result']}\n\n"
         "Write a clear, concise natural-language answer."
     )
 
     # Run finalize + verify concurrently. Stream the answer's tokens live if a sink
-    # is set (web UI); None on the eval path → normal buffered call.
+    # is set (web UI); None on the eval path → normal buffered call. Our own pool
+    # doesn't inherit contextvars, so the usage collector rides along explicitly.
     sink = state.get("_token_sink")
+    usage = current_usage()
     with ThreadPoolExecutor(max_workers=2) as pool:
         fin_fut = pool.submit(
-            call_llm, finalize_prompt, DEEPSEEK_MODEL_FLASH, _FINALIZE_SYSTEM, sink
+            call_with_usage, usage, call_llm, finalize_prompt, DEEPSEEK_MODEL_FLASH,
+            _FINALIZE_SYSTEM, sink
         )
-        ver_fut = pool.submit(_run_verify, state)
+        ver_fut = pool.submit(call_with_usage, usage, _run_verify, state)
         answer = fin_fut.result()
         verify_reason = ver_fut.result()
 
@@ -1331,6 +1338,7 @@ def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSt
             f"Question: {state['question']}\nAnswer: {answer}",
             model=DEEPSEEK_MODEL_FLASH,
             system=_INSIGHT_SYSTEM,
+            max_tokens=150,
         )
         if raw and raw.strip().upper() != "NONE":
             insight = raw.strip()

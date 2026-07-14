@@ -44,13 +44,23 @@ create table if not exists snapshot (
 );
 create index if not exists snapshot_built_at_idx on snapshot (built_at);
 create table if not exists query_log (
-  id         bigserial primary key,
-  steam_id   text references steam_user(steam_id) on delete set null,
-  question   text,
-  route      text,
-  latency_ms int,
-  created_at timestamptz not null default now()
+  id                bigserial primary key,
+  steam_id          text references steam_user(steam_id) on delete set null,
+  question          text,
+  route             text,
+  latency_ms        int,
+  llm_calls         int,   -- 19.4: per-answer unit economics
+  prompt_tokens     int,
+  completion_tokens int,
+  cache_hit_tokens  int,   -- DeepSeek prompt_cache_hit_tokens (prefix-cache hits)
+  created_at        timestamptz not null default now()
 );
+-- 19.4 upgrade for deployments created before the token columns (idempotent —
+-- safe to re-run the whole script):
+alter table query_log add column if not exists llm_calls         int;
+alter table query_log add column if not exists prompt_tokens     int;
+alter table query_log add column if not exists completion_tokens int;
+alter table query_log add column if not exists cache_hit_tokens  int;
 create table if not exists user_memory (
   steam_id   text primary key references steam_user(steam_id) on delete cascade,
   memory     text,                                  -- evolving per-user summary (~8 bullets)
@@ -86,10 +96,12 @@ def _headers(prefer: str = "") -> dict:
     return h
 
 
-def _post(table: str, row: dict, *, upsert_on: str | None = None) -> None:
-    """Insert (or upsert when upsert_on is given) a single row. Best-effort."""
+def _post(table: str, row: dict, *, upsert_on: str | None = None) -> int | None:
+    """Insert (or upsert when upsert_on is given) a single row. Best-effort.
+    Returns the HTTP status (None on transport error) so a caller can detect a
+    schema mismatch and degrade — everything else ignores it."""
     if not using_db():
-        return
+        return None
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     params = {}
     prefer = "return=minimal"
@@ -97,10 +109,11 @@ def _post(table: str, row: dict, *, upsert_on: str | None = None) -> None:
         params["on_conflict"] = upsert_on
         prefer = "return=minimal,resolution=merge-duplicates"
     try:
-        requests.post(url, params=params or None, headers=_headers(prefer),
-                      json=row, timeout=_TIMEOUT)
+        r = requests.post(url, params=params or None, headers=_headers(prefer),
+                          json=row, timeout=_TIMEOUT)
+        return r.status_code
     except requests.RequestException:
-        pass
+        return None
 
 
 # ── public hooks (called from api/) ──────────────────────────────────────────────
@@ -139,14 +152,28 @@ def upsert_snapshot(steam_id: str, *, status: str = "ready",
 
 
 def log_query(steam_id: str | None, question: str, route: str | None,
-              latency_ms: int) -> None:
-    """Append a usage/latency row per /ask. Truncates question to keep rows lean."""
-    _post("query_log", {
+              latency_ms: int, usage: dict | None = None) -> None:
+    """Append a usage/latency row per /ask. Truncates question to keep rows lean.
+    `usage` is the run's llm_usage dict (19.4) — token columns are included only
+    when LLM calls were actually made, and if the table predates the token-column
+    migration the row is retried without them so analytics never silently stop."""
+    row = {
         "steam_id": str(steam_id) if steam_id else None,
         "question": (question or "")[:500],
         "route": route,
         "latency_ms": latency_ms,
-    })
+    }
+    token_cols = {}
+    if usage and usage.get("llm_calls"):
+        token_cols = {
+            "llm_calls": int(usage.get("llm_calls") or 0),
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "cache_hit_tokens": int(usage.get("cache_hit_tokens") or 0),
+        }
+    status = _post("query_log", {**row, **token_cols})
+    if token_cols and status == 400:
+        _post("query_log", row)  # un-migrated table → keep the lean row at least
 
 
 def get_memory(steam_id: str) -> str:

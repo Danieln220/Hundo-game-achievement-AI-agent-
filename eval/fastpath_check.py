@@ -51,6 +51,11 @@ def main() -> None:
     focus_left = int(started.sort_values("remaining").iloc[0]["remaining"])
     closest_game = gname[started.sort_values("pct", ascending=False).iloc[0]["appid"]]
     hidden_total = int(m["hidden"].sum())
+    u = m[m["achieved"] & (m["unlock_time"] > 0)]
+    last_unlock = str(u.loc[u["unlock_time"].idxmax()]["display_name"])
+    recent_games = [gname[a] for a in
+                    u.sort_values("unlock_time", ascending=False)["appid"]
+                    .drop_duplicates().head(3)]
 
     def hits(question: str, shape: str, *must_contain: str) -> None:
         r = fast_answer(question)
@@ -83,7 +88,11 @@ def main() -> None:
     hits("how many achievements are left in Company of Heroes 3?", "game_remaining",
          "Company of Heroes 3", "6")
     hits("how many hidden achievements are there in my games?", "hidden", str(hidden_total))
-    hits("what was my latest unlock, which achievement?", "recent")
+    hits("what was my latest unlock, which achievement?", "recent", last_unlock)
+    hits("Which three of my games have the most recent achievement unlock?", "recent",
+         *recent_games)
+    hits("what were my last 5 unlocks?", "recent", last_unlock)
+    hits("three rarest achievements", "rarest", rarest_name)
     hits("which game has the most achievements?", "game_most_ach")
     hits("my stalled games?", "stalled")
     hits("which of my games have no achievements?", "no_ach_games")
