@@ -64,6 +64,11 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// Cheap liveness probe — used to warm/await the free-tier server. The Steam
+// sign-in is a full-page navigation to the API, so a sleeping server would show
+// Render's own error page; we only navigate once /health answers.
+export const health = () => get<{ status: string }>("/health");
+
 // Returns a ready summary immediately if the snapshot exists, else {status:"building"}.
 export const session = (profile: string) =>
   post<SessionResponse>("/session", { profile });

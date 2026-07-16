@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { isWaking, session, sessionStatus, steamLoginUrl } from "../api";
+import { health, isWaking, session, sessionStatus, steamLoginUrl } from "../api";
 import type { SessionResult } from "../types";
 
 const POLL_MS = 1500; // how often to poll /session/status while a snapshot builds
@@ -26,6 +26,10 @@ export default function ProfileGate({
   const cancelled = useRef(false);
   useEffect(() => () => { cancelled.current = true; }, []);
 
+  // Warm the free-tier server the moment the gate renders, so it's usually
+  // awake before the user finishes typing or clicks the Steam button.
+  useEffect(() => { health().catch(() => {}); }, []);
+
   // Returning from "Sign in through Steam": the backend bounced us back with a
   // verified ?steam_id= (or ?login_error=1). Auto-load it, then clean the URL.
   useEffect(() => {
@@ -41,6 +45,54 @@ export default function ProfileGate({
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+  // Run a request, riding out a cold start: on a wake-shaped failure keep
+  // retrying (with a visible "waking the server" state) instead of surfacing
+  // the browser's raw "Failed to fetch". Real refusals (404 unknown profile,
+  // 429 rate limit) surface immediately. Returns undefined if the gate was
+  // unmounted mid-wait.
+  async function withWake<T>(fn: () => Promise<T>): Promise<T | undefined> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const out = await fn();
+        setWaking(false);
+        return out;
+      } catch (e) {
+        if (!isWaking(e) || attempt >= WAKE_DELAYS_MS.length) {
+          if (isWaking(e)) {
+            throw new Error(
+              "The server is taking unusually long to wake up — wait a minute and try again."
+            );
+          }
+          throw e;
+        }
+        setWaking(true);
+        await sleep(WAKE_DELAYS_MS[attempt]);
+        if (cancelled.current) return undefined;
+      }
+    }
+  }
+
+  // "Sign in through Steam" is a FULL-PAGE navigation to the API (it must be —
+  // the API redirects to Steam). Navigating at a sleeping server would land on
+  // Render's own error page, so we hold the click until /health answers.
+  async function steamLogin(e: React.MouseEvent) {
+    e.preventDefault();
+    if (loading) return;
+    cancelled.current = false;
+    setLoading(true);
+    setError(null);
+    setProgress(null);
+    try {
+      const ok = await withWake(() => health());
+      if (ok === undefined) return; // unmounted mid-wait
+      window.location.href = steamLoginUrl(); // server is awake — off to Steam
+    } catch (err) {
+      setError((err as Error).message);
+      setLoading(false);
+      setWaking(false);
+    }
+  }
+
   async function load(profile?: string) {
     const p = (profile ?? value).trim();
     if (!p || loading) return;
@@ -49,30 +101,8 @@ export default function ProfileGate({
     setError(null);
     setProgress(null);
     try {
-      // Connect, riding out a cold start: on a wake-shaped failure keep retrying
-      // (with a visible "waking the server" state) instead of surfacing the
-      // browser's raw "Failed to fetch". Real refusals (404 unknown profile,
-      // 429 rate limit) surface immediately.
-      let r;
-      for (let attempt = 0; ; attempt++) {
-        try {
-          r = await session(p);
-          break;
-        } catch (e) {
-          if (!isWaking(e) || attempt >= WAKE_DELAYS_MS.length) {
-            if (isWaking(e)) {
-              throw new Error(
-                "The server is taking unusually long to wake up — wait a minute and try again."
-              );
-            }
-            throw e;
-          }
-          setWaking(true);
-          await sleep(WAKE_DELAYS_MS[attempt]);
-          if (cancelled.current) return;
-        }
-      }
-      setWaking(false);
+      const r = await withWake(() => session(p));
+      if (r === undefined) return; // unmounted mid-wait
       if (r.status === "ready") {
         onLoaded(r); // cached snapshot — straight in
         return;
@@ -140,7 +170,7 @@ export default function ProfileGate({
 
       {/* Valve's official sign-in art (brand guidelines ask for it; it's also the
           button users already trust). Styled fallback text shows if the CDN fails. */}
-      <a className="steam-btn" href={steamLoginUrl()} aria-disabled={loading}>
+      <a className="steam-btn" href={steamLoginUrl()} onClick={steamLogin} aria-disabled={loading}>
         <img
           src="https://community.cloudflare.steamstatic.com/public/images/signinthroughsteam/sits_01.png"
           alt="Sign in through Steam"
