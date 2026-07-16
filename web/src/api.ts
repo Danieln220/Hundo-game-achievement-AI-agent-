@@ -11,6 +11,24 @@ import type {
 // (a double slash 404s on FastAPI).
 const BASE = ((import.meta.env.VITE_API_URL as string) || "http://localhost:8000").replace(/\/+$/, "");
 
+// Error that keeps the HTTP status, so callers can tell "server said no"
+// (404 profile, 429 rate limit) apart from "server isn't up yet".
+export class ApiError extends Error {
+  status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// True for failures that look like the free-tier host waking from idle: a
+// network-level fetch rejection (browsers throw TypeError — the raw "Failed to
+// fetch") or the edge's 502/503/504 while the server boots. These are worth
+// retrying quietly instead of surfacing a scary error.
+export const isWaking = (e: unknown): boolean =>
+  e instanceof TypeError ||
+  (e instanceof ApiError && [502, 503, 504].includes(e.status ?? 0));
+
 async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(BASE + path, {
     method: "POST",
@@ -26,7 +44,7 @@ async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promi
     } catch {
       /* non-JSON error body */
     }
-    throw new Error(detail);
+    throw new ApiError(detail, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -41,7 +59,7 @@ async function get<T>(path: string): Promise<T> {
     } catch {
       /* non-JSON error body */
     }
-    throw new Error(detail);
+    throw new ApiError(detail, res.status);
   }
   return res.json() as Promise<T>;
 }

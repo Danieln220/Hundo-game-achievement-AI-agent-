@@ -1,0 +1,12 @@
+- generic [ref=e4]:
+  - heading "Open your trophy case" [level=2] [ref=e5]
+  - paragraph [ref=e6]: Your achievements, read like rare cards — rarity, roadmaps, and a full profile audit. Enter your Steam alias, ID, or profile link to begin. Game details must be Public.
+  - generic [ref=e7]:
+    - textbox "e.g. daniel" [active] [ref=e8]
+    - button "Load my data" [disabled] [ref=e9]
+  - generic [ref=e10]: or
+  - link "Sign in through Steam" [ref=e12] [cursor=pointer]:
+    - /url: http://localhost:8000/auth/steam/login
+    - img "Sign in through Steam"
+  - group [ref=e13]:
+    - generic "Where do I find this?" [ref=e14] [cursor=pointer]

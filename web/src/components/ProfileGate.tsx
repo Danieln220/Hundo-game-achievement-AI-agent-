@@ -1,8 +1,13 @@
 import { useState, useRef, useEffect } from "react";
-import { session, sessionStatus, steamLoginUrl } from "../api";
+import { isWaking, session, sessionStatus, steamLoginUrl } from "../api";
 import type { SessionResult } from "../types";
 
 const POLL_MS = 1500; // how often to poll /session/status while a snapshot builds
+
+// Retry schedule for a cold-starting server (Render free tier naps when idle and
+// takes 30–90s to boot; its edge answers 502 meanwhile — the browser shows that
+// as a bare "Failed to fetch" without this). ~85s total, then we give up.
+const WAKE_DELAYS_MS = [3000, 5000, 8000, 10000, 10000, 10000, 10000, 10000, 10000, 10000];
 
 export default function ProfileGate({
   onLoaded,
@@ -11,6 +16,7 @@ export default function ProfileGate({
 }) {
   const [value, setValue] = useState("");
   const [loading, setLoading] = useState(false);
+  const [waking, setWaking] = useState(false); // server cold-starting — retrying quietly
   const [error, setError] = useState<string | null>(null);
   // Real build progress (done/total/pct) from the server; null until the first
   // progress tick (or for the fast cached path, which never shows a bar).
@@ -43,7 +49,30 @@ export default function ProfileGate({
     setError(null);
     setProgress(null);
     try {
-      const r = await session(p);
+      // Connect, riding out a cold start: on a wake-shaped failure keep retrying
+      // (with a visible "waking the server" state) instead of surfacing the
+      // browser's raw "Failed to fetch". Real refusals (404 unknown profile,
+      // 429 rate limit) surface immediately.
+      let r;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          r = await session(p);
+          break;
+        } catch (e) {
+          if (!isWaking(e) || attempt >= WAKE_DELAYS_MS.length) {
+            if (isWaking(e)) {
+              throw new Error(
+                "The server is taking unusually long to wake up — wait a minute and try again."
+              );
+            }
+            throw e;
+          }
+          setWaking(true);
+          await sleep(WAKE_DELAYS_MS[attempt]);
+          if (cancelled.current) return;
+        }
+      }
+      setWaking(false);
       if (r.status === "ready") {
         onLoaded(r); // cached snapshot — straight in
         return;
@@ -79,6 +108,7 @@ export default function ProfileGate({
     } catch (e) {
       setError((e as Error).message);
       setLoading(false);
+      setWaking(false);
       setProgress(null);
     }
   }
@@ -124,7 +154,17 @@ export default function ProfileGate({
 
       {loading && (
         <div className="gate-progress">
-          {progress && progress.total > 0 ? (
+          {waking ? (
+            <>
+              <div className="indeterminate-bar">
+                <div className="indeterminate-fill" />
+              </div>
+              <p className="muted small">
+                Waking the server — free hosting naps when idle.{" "}
+                <span className="muted">This can take up to a minute…</span>
+              </p>
+            </>
+          ) : progress && progress.total > 0 ? (
             <>
               <div className="progress-bar">
                 <div style={{ width: `${progress.pct}%` }} />
