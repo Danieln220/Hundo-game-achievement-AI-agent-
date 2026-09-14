@@ -22,6 +22,7 @@ from config import SNAPSHOT_DIR, STEAM_ID, SNAPSHOT_LOCK_TTL, SNAPSHOT_WAIT_MAX
 from . import steam_client
 from . import storage
 from . import cache
+from .frames import frames_from_dir
 
 # Bounded so we fetch fast without tripping Steam's rate limits. Each game needs
 # 3 calls, so a big library = hundreds of calls; more workers = shorter wall time.
@@ -286,91 +287,24 @@ def ensure_snapshot(
         _build_with_lock(steam_id, progress_cb=progress_cb)
 
 
+def local_snapshot_dir(steam_id: str = STEAM_ID) -> Path:
+    """Hydrate this user's snapshot into the local cache (Supabase mode) and return
+    the directory that holds it. This is the ONLY place the sandbox parent needs
+    before spawning: the child (agent/_sandbox_runner.py) reads that directory via
+    data_layer.frames and never touches object storage or config itself (23.1)."""
+    _ensure_local_cache(str(steam_id))
+    return _resolve_snapshot_dir(str(steam_id))
+
+
 def load_frames(steam_id: str = STEAM_ID) -> dict[str, pd.DataFrame]:
     """Load this user's cached snapshot into the three frames the agent expects:
         games          -> appid, name, playtime
         achievements   -> appid, api_name, display_name, description, rarity_pct, hidden
         player_unlocks -> appid, api_name, achieved, unlock_time
     Returns empty (correctly-typed) frames if no snapshot exists for the user.
-    """
-    _ensure_local_cache(str(steam_id))  # hydrate from object storage if needed (Supabase mode)
-    snap = _resolve_snapshot_dir(str(steam_id))
-
-    owned_path = snap / "owned_games.json"
-    raw_owned = json.loads(owned_path.read_text()) if owned_path.exists() else {}
-    games_list = raw_owned.get("response", {}).get("games", [])
-
-    schemas  = json.loads((snap / "schemas.json").read_text())      if (snap / "schemas.json").exists()      else {}
-    ach_data = json.loads((snap / "achievements.json").read_text())  if (snap / "achievements.json").exists()  else {}
-    pct_data = json.loads((snap / "global_pct.json").read_text())    if (snap / "global_pct.json").exists()    else {}
-
-    games_df = pd.DataFrame([
-        {
-            "appid":    g["appid"],
-            "name":     g.get("name", str(g["appid"])),
-            "playtime": g.get("playtime_forever", 0),
-        }
-        for g in games_list
-    ])
-
-    ach_rows = []
-    unlock_rows = []
-
-    for game in games_list:
-        appid = game["appid"]
-        appid_str = str(appid)
-
-        ach_list = (
-            schemas.get(appid_str, {})
-                   .get("game", {})
-                   .get("availableGameStats", {})
-                   .get("achievements", [])
-        )
-
-        pct_map = {
-            a["name"]: a["percent"]
-            for a in pct_data.get(appid_str, {})
-                             .get("achievementpercentages", {})
-                             .get("achievements", [])
-        }
-
-        for a in ach_list:
-            ach_rows.append({
-                "appid":        appid,
-                "api_name":     a.get("name", ""),
-                "display_name": a.get("displayName", ""),
-                "description":  a.get("description", ""),
-                "rarity_pct":   pct_map.get(a.get("name", ""), None),
-                "hidden":       bool(a.get("hidden", 0)),
-            })
-
-        player_list = (
-            ach_data.get(appid_str, {})
-                    .get("playerstats", {})
-                    .get("achievements", [])
-        )
-
-        for a in player_list:
-            unlock_rows.append({
-                "appid":       appid,
-                "api_name":    a.get("apiname", ""),
-                "achieved":    bool(a.get("achieved", 0)),
-                "unlock_time": a.get("unlocktime", 0),
-            })
-
-    achievements_df = pd.DataFrame(ach_rows) if ach_rows else pd.DataFrame(
-        columns=["appid", "api_name", "display_name", "description", "rarity_pct", "hidden"]
-    )
-    achievements_df["rarity_pct"] = pd.to_numeric(achievements_df["rarity_pct"], errors="coerce")
-    player_unlocks_df = pd.DataFrame(unlock_rows) if unlock_rows else pd.DataFrame(
-        columns=["appid", "api_name", "achieved", "unlock_time"]
-    )
-
-    return {
-        "games":          games_df,
-        "achievements":   achievements_df,
-        "player_unlocks": player_unlocks_df,
-    }
+    The JSON→frames transform itself lives in data_layer.frames (dependency-free,
+    shared with the sandbox runner)."""
+    return frames_from_dir(local_snapshot_dir(steam_id))
 
 
 if __name__ == "__main__":
