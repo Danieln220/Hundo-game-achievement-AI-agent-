@@ -12,7 +12,7 @@ CLAUDE.md
 web/node_modules/
 web/dist/
 PROJECT_SUMMARY.md
-DEPLOY.md
 web/skills/
 hundo-codebase
 web/DESIGN_BRIEF.md
+.playwright-mcp/

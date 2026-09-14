@@ -40,3 +40,16 @@ services:
         sync: false
       - key: HUNDO_TRACING        # "true" to enable LangSmith (needs LANGSMITH_API_KEY)
         value: "false"
+      - key: EXEC_TIMEOUT_SECONDS # sandbox hard timeout; the 10s default is too short on
+        value: "30"               # the free tier's 0.1 CPU (charts/audit silently timed out)
+      # Other tunables read by config.py — all optional, defaults shown; add a
+      # `- key: … / value: "…"` entry here to pin one (see .env.example for meaning):
+      #   EXEC_MEMORY_MB=2048            LLM_MAX_TOKENS=4096
+      #   DEEPSEEK_BASE_URL=https://api.deepseek.com
+      #   DEEPSEEK_MODEL_PRO=deepseek-v4-pro   DEEPSEEK_MODEL_FLASH=deepseek-v4-flash
+      #   RATE_LIMIT_ASK_PER_MIN=15      RATE_LIMIT_ASK_PER_DAY=150   RATE_LIMIT_SESSION_PER_MIN=10
+      #   ANSWER_CACHE_TTL_SECONDS=21600 SEARCH_CACHE_TTL_DAYS=14
+      #   SNAPSHOT_LOCK_TTL=90           SNAPSHOT_WAIT_MAX=900        SNAPSHOT_TTL_DAYS=30
+      #   SUPABASE_BUCKET_CHARTS=hundo-charts  SUPABASE_BUCKET_SNAPSHOTS=hundo-snapshots
+      #   CHART_TTL_HOURS=6              CHART_MAX_FILES=50
+      #   FRONTEND_URL (defaults to the first CORS_ORIGINS entry)   LANGSMITH_API_KEY

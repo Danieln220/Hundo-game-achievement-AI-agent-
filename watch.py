@@ -10,6 +10,12 @@ are in RIGHT NOW, then polls only THAT game's achievements (1 call). ~2 calls pe
 cycle regardless of library size. Polling current game's achievements is the one
 sanctioned exception to "always use the snapshot" — watching needs live data.
 
+Session features (Step 16.0 — the future Overwolf overlay's core behaviors,
+proven here first): on game start it prints a grounded "chase this session"
+list (easiest locked achievements by global rarity, straight from the
+snapshot); on game exit / switch / Ctrl+C it prints a session recap (duration,
+pulls, rarest pull, completion progress).
+
 Honest limits: polling means ~30-60s latency (Steam has no unlock push events),
 and this is a console/notification companion, NOT an in-game overlay (Steam does
 not open its overlay to third parties).
@@ -57,6 +63,40 @@ def game_meta(frames: dict[str, pd.DataFrame], appid: int):
         for r in sub.itertuples()
     }
     return name, ach_map, len(sub)
+
+
+_CHASE_N = 5  # locked achievements suggested at game start (easiest first)
+
+
+def build_chase_list(meta, unlocked: set[str], n: int = _CHASE_N) -> list[tuple[str, Optional[float]]]:
+    """Top-n locked achievements to chase this session, easiest first (highest
+    global rarity % = most players have it). Unknown-rarity ones sort last.
+    Returns [(display_name, rarity_pct|None)]; empty if everything's unlocked
+    or the game isn't in the snapshot."""
+    _, ach_map, _ = meta
+    locked = [(d, r) for api, (d, r) in ach_map.items() if api not in unlocked]
+    locked.sort(key=lambda t: (t[1] is None, -(t[1] or 0.0)))
+    return locked[:n]
+
+
+def build_recap(session: dict, total: int, last_count: int,
+                now_ts: Optional[float] = None) -> str:
+    """Grounded one-line session summary: duration, pulls, rarest pull, and
+    completion progress. `session` = {name, t0, pulls:[(display, rarity)]};
+    `now_ts` is injectable for tests."""
+    now_ts = now_ts or time.time()
+    minutes = max(1, int((now_ts - session["t0"]) // 60))
+    pulls = session["pulls"]
+    line = f"🏁 Session recap — {session['name']}: {minutes} min"
+    line += f" · {len(pulls)} pull{'s' if len(pulls) != 1 else ''}" if pulls else " · no new pulls"
+    rarities = [r for _, r in pulls if r is not None]
+    if rarities:
+        line += f" · rarest {min(rarities):.1f}%"
+    if total:
+        left = total - last_count
+        line += (" · 100% complete 🏆" if left <= 0
+                 else f" · now {last_count / total * 100:.0f}% ({left} left)")
+    return line
 
 
 def make_commentary(api_name: str, meta, unlocked_count: int, use_llm: bool = False) -> str:
@@ -120,7 +160,17 @@ def watch(steam_id: str = STEAM_ID, interval: int = 45, use_llm: bool = True) ->
     frames = load_frames(steam_id)
     seen: dict[int, set[str]] = {}
     active: Optional[int] = None
+    # Current session: {appid, name, t0, pulls:[(display, rarity)], total}.
+    session: Optional[dict] = None
     backoff = interval
+
+    def end_session() -> None:
+        """Emit the recap for the active session (if any) and clear it."""
+        nonlocal session
+        if session is not None:
+            last = len(seen.get(session["appid"], set()))
+            notify(build_recap(session, session["total"], last))
+            session = None
 
     print(f"👀 Watching {steam_id} — auto-follows your current game. Ctrl+C to stop.\n", flush=True)
 
@@ -130,6 +180,7 @@ def watch(steam_id: str = STEAM_ID, interval: int = 45, use_llm: bool = True) ->
 
             if game is None:
                 if active is not None:
+                    end_session()
                     print("· no longer in a game (idling)", flush=True)
                     active = None
                 time.sleep(interval)
@@ -140,23 +191,42 @@ def watch(steam_id: str = STEAM_ID, interval: int = 45, use_llm: bool = True) ->
             now = unlocked_from_response(resp)
 
             if appid != active:
+                end_session()  # direct game→game switches recap the old one first
                 # Just started this game: snapshot the current state, react only to
                 # unlocks that happen FROM NOW (don't replay everything already earned).
+                meta = game_meta(frames, appid)
                 print(f"▶ Now playing: {name} ({appid}) — {len(now)} already unlocked", flush=True)
+                chase = build_chase_list(meta, now)
+                if chase:
+                    print("🎯 Chase this session:", flush=True)
+                    for display, rarity in chase:
+                        tag = (f"{rarity:.1f}% of players have it"
+                               if rarity is not None else "rarity unknown")
+                        print(f"   · '{display}' — {tag}", flush=True)
+                elif meta[2]:
+                    print("   ✨ Already 100% here — nothing left to chase.", flush=True)
+                else:
+                    print("   (game not in your snapshot yet — no chase list; "
+                          "reload your profile on the site to refresh)", flush=True)
                 active = appid
                 seen[appid] = now
+                session = {"appid": appid, "name": name, "t0": time.time(),
+                           "pulls": [], "total": meta[2]}
             else:
                 new = diff_unlocks(seen.get(appid, set()), now)
                 if new:
                     meta = game_meta(frames, appid)
                     for api in new:
                         notify(make_commentary(api, meta, len(now), use_llm))
+                        if session is not None:
+                            session["pulls"].append(meta[1].get(api, (api, None)))
                     seen[appid] = now
 
             backoff = interval
             time.sleep(interval)
 
         except KeyboardInterrupt:
+            end_session()
             print("\n👋 Stopped watching.", flush=True)
             break
         except Exception as exc:  # network hiccup / rate limit → back off, keep going
