@@ -137,18 +137,42 @@ def upsert_snapshot(steam_id: str, *, status: str = "ready",
                     games: int | None = None, total_achievements: int | None = None,
                     total_unlocked: int | None = None, location: str | None = None,
                     error: str | None = None) -> None:
-    """Record snapshot metadata after a build (freshness + cleanup + header stats)."""
-    row = {
-        "steam_id": str(steam_id),
-        "status": status,
-        "built_at": _now(),
-        "games": games,
-        "total_achievements": total_achievements,
-        "total_unlocked": total_unlocked,
-        "location": location,
-        "error": error,
-    }
+    """Record snapshot metadata (freshness + cleanup + header stats). Called at
+    build START (status="building"), on success ("ready" + stats) and on failure
+    ("failed" + error). Only non-None fields are sent (23.3e): a failed rebuild
+    used to NULL the cached header stats of the previous good build.
+
+    This DB row is ALSO the fallback source of build status for /session/status
+    when Redis is unavailable (2026-09-15 incident) — see api/main.py."""
+    row = {"steam_id": str(steam_id), "status": status, "built_at": _now()}
+    if status != "failed":
+        row["error"] = None  # clear a stale error message on building/ready
+    for k, v in (("games", games), ("total_achievements", total_achievements),
+                 ("total_unlocked", total_unlocked), ("location", location), ("error", error)):
+        if v is not None:
+            row[k] = v
     _post("snapshot", row, upsert_on="steam_id")
+
+
+def get_snapshot(steam_id: str) -> dict | None:
+    """The snapshot metadata row {status, built_at, error, …} or None (absent /
+    DB off / transport error). Best-effort read used as the Redis-independent
+    source of build status."""
+    if not using_db():
+        return None
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/snapshot",
+            params={"steam_id": f"eq.{steam_id}",
+                    "select": "status,built_at,error,games,total_achievements,total_unlocked"},
+            headers=_headers(),
+            timeout=_TIMEOUT,
+        )
+        r.raise_for_status()
+        rows = r.json()
+        return rows[0] if rows else None
+    except (requests.RequestException, ValueError, KeyError, IndexError):
+        return None
 
 
 def log_query(steam_id: str | None, question: str, route: str | None,

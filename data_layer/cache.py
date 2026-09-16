@@ -55,9 +55,42 @@ def _mem_alive(entry: list | None) -> bool:
 
 # ── operations ──────────────────────────────────────────────────────────────────
 
+def _mem_sweep_locked() -> None:
+    """Drop expired in-memory entries (caller holds _mem_lock). Cheap, and only
+    run when the map has grown — keeps the fallback limiter from leaking keys."""
+    if len(_mem) > 5000:
+        now = time.time()
+        for k in [k for k, v in _mem.items() if v[1] is not None and v[1] < now]:
+            _mem.pop(k, None)
+
+
+def _mem_incr(key: str, ttl_seconds: int) -> int:
+    with _mem_lock:
+        entry = _mem.get(key)
+        if _mem_alive(entry):
+            entry[0] += 1
+            return entry[0]
+        _mem_sweep_locked()
+        _mem[key] = [1, time.time() + ttl_seconds]
+        return 1
+
+
+def _mem_ttl(key: str) -> int:
+    with _mem_lock:
+        entry = _mem.get(key)
+        if not _mem_alive(entry) or entry[1] is None:
+            return -1
+        return max(0, int(entry[1] - time.time()))
+
+
 def incr(key: str, ttl_seconds: int) -> int:
     """Increment a counter, setting its TTL on the first hit (fixed window).
-    Returns the new count, or 0 if Redis errored (fail-open)."""
+
+    Limits FAIL CLOSED (23.2b): if Redis errors, the count comes from this
+    instance's in-memory window instead of 0. Per-instance limiting is weaker
+    than shared limiting but infinitely better than none — the 2026-09-15
+    incident (Upstash DB deleted → every request counted as 0 → no limit at all)
+    is exactly what this prevents. Locks stay fail-open (see acquire_lock)."""
     if using_redis():
         try:
             # EXPIRE ... NX only sets the TTL when the key has none, so the window
@@ -65,29 +98,31 @@ def incr(key: str, ttl_seconds: int) -> int:
             res = _pipeline([["INCR", key], ["EXPIRE", key, str(ttl_seconds), "NX"]])
             return int(res[0])
         except Exception:
-            return 0
-    with _mem_lock:
-        entry = _mem.get(key)
-        if _mem_alive(entry):
-            entry[0] += 1
-            return entry[0]
-        _mem[key] = [1, time.time() + ttl_seconds]
-        return 1
+            return _mem_incr(key, ttl_seconds)
+    return _mem_incr(key, ttl_seconds)
 
 
 def ttl(key: str) -> int:
-    """Seconds until `key` expires (for Retry-After). -1 if unknown/no expiry."""
+    """Seconds until `key` expires (for Retry-After). -1 if unknown/no expiry.
+    Falls back to the in-memory window when Redis errors (pairs with incr)."""
     if using_redis():
         try:
             v = _command("TTL", key)
             return int(v) if v is not None else -1
         except Exception:
-            return -1
-    with _mem_lock:
-        entry = _mem.get(key)
-        if not _mem_alive(entry) or entry[1] is None:
-            return -1
-        return max(0, int(entry[1] - time.time()))
+            return _mem_ttl(key)
+    return _mem_ttl(key)
+
+
+def ping() -> bool:
+    """True if the configured Redis answers PING (False when unreachable or when
+    running on the in-memory fallback). For startup/health diagnostics."""
+    if not using_redis():
+        return False
+    try:
+        return str(_command("PING")).upper() == "PONG"
+    except Exception:
+        return False
 
 
 def exists(key: str) -> bool:

@@ -25,19 +25,20 @@ from config import (
     CORS_ORIGINS, CHART_TTL_HOURS, CHART_MAX_FILES, missing_secrets,
     RATE_LIMIT_ASK_PER_MIN, RATE_LIMIT_ASK_PER_DAY, RATE_LIMIT_SESSION_PER_MIN,
     SNAPSHOT_TTL_DAYS, PUBLIC_API_URL, FRONTEND_URL, ANSWER_CACHE_TTL_SECONDS,
+    SNAPSHOT_WAIT_MAX,
 )
 from agent import run, run_stream, make_chart, distill_memory, fast_answer
 from data_layer import steam_client
 from data_layer import storage
 from data_layer import cache
 from data_layer import db
-from data_layer.library import build_library
+from data_layer.library import build_library, header_stats
 
 import time
 from data_layer.resolver import resolve_steam_id, SteamResolveError
 from data_layer.snapshot import (
     ensure_snapshot, has_snapshot, load_frames, clear_snapshot, PrivateProfileError,
-    snapshot_version,
+    snapshot_version, is_private_owned_payload, PRIVATE_PROFILE_MSG,
 )
 
 import threading
@@ -322,11 +323,7 @@ def _progress_key(sid: str) -> str:
 
 def _session_summary(steam_id: str) -> dict:
     """Headline profile stats for the UI header (assumes the snapshot is ready)."""
-    frames = load_frames(steam_id)
-    ach, pu, games = frames["achievements"], frames["player_unlocks"], frames["games"]
-    total_per = ach.groupby("appid").size()
-    unlocked_per = pu[pu["achieved"]].groupby("appid").size().reindex(total_per.index, fill_value=0)
-    perfect = int(((unlocked_per == total_per) & (total_per > 0)).sum())
+    stats = header_stats(load_frames(steam_id))
     summary = {}
     try:
         summary = steam_client.get_player_summary(steam_id)
@@ -336,16 +333,15 @@ def _session_summary(steam_id: str) -> dict:
         "steam_id": steam_id,
         "persona": summary.get("personaname", ""),
         "avatar": summary.get("avatarfull", ""),
-        "games": int(len(games)),
-        "unlocked": int(pu["achieved"].sum()),
-        "total": int(len(ach)),
-        "perfect": perfect,
+        **stats,
     }
 
 
-def _run_build(steam_id: str) -> None:
+def _run_build(steam_id: str, owned: Optional[dict] = None) -> None:
     """Background worker: build the snapshot, writing progress to the cache. The
-    build-lock inside ensure_snapshot dedupes concurrent builds for the same user."""
+    build-lock inside ensure_snapshot dedupes concurrent builds for the same user.
+    Status is mirrored to the DB row (building → ready/failed) so it is visible
+    even when Redis is unavailable (2026-09-15 incident)."""
     cache.set(_status_key(steam_id), "building", _STATUS_TTL)
     cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
 
@@ -353,7 +349,7 @@ def _run_build(steam_id: str) -> None:
         cache.set(_progress_key(steam_id), f"{done}/{total}", _STATUS_TTL)
 
     try:
-        ensure_snapshot(steam_id, progress_cb=cb)
+        ensure_snapshot(steam_id, progress_cb=cb, owned=owned)
         cache.set(_status_key(steam_id), "ready", _STATUS_TTL)
         _record_snapshot_meta(steam_id)
     except PrivateProfileError as e:
@@ -361,7 +357,23 @@ def _run_build(steam_id: str) -> None:
         db.upsert_snapshot(steam_id, status="failed", error=str(e))
     except Exception as e:
         cache.set(_status_key(steam_id), f"failed:Couldn't load profile: {e}", _STATUS_TTL)
-        db.upsert_snapshot(steam_id, status="failed", error=str(e))
+        db.upsert_snapshot(steam_id, status="failed", error=f"Couldn't load profile: {e}")
+
+
+_RETRY_HINT = ("The profile build didn't finish (the server restarted or the build "
+               "status expired). Please load the profile again.")
+
+
+def _row_age_seconds(row: Optional[dict]) -> Optional[float]:
+    """Seconds since the snapshot row's built_at (None if absent/unparseable)."""
+    from datetime import datetime, timezone
+    try:
+        ts = datetime.fromisoformat(str(row["built_at"]).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _record_snapshot_meta(steam_id: str) -> None:
@@ -400,11 +412,27 @@ def session(req: SessionReq):
         db.upsert_user(steam_id, req.profile, summ["persona"], summ["avatar"])
         return {"status": "ready", **summ}
 
-    # Not built yet → record identity, launch a background build, tell client to poll.
+    # Not built yet → record identity, then check privacy UP-FRONT with one Steam
+    # call (reused by the build): a private profile fails instantly with the real
+    # message instead of an async build whose failure was invisible when Redis
+    # was down (2026-09-15 incident). A transient Steam error just skips the check.
     db.upsert_user(steam_id, req.profile)
+    owned = None
+    try:
+        owned = steam_client.get_owned_games(steam_id)
+    except Exception:
+        owned = None
+    if owned is not None and is_private_owned_payload(owned):
+        db.upsert_snapshot(steam_id, status="failed", error=PRIVATE_PROFILE_MSG)
+        raise HTTPException(status_code=403, detail=PRIVATE_PROFILE_MSG)
+
+    # Launch the background build and tell the client to poll. The DB row is
+    # written SYNCHRONOUSLY here (not in the thread) so the very first poll can
+    # already see "building" even if the cache is unavailable.
+    db.upsert_snapshot(steam_id, status="building")
     cache.set(_status_key(steam_id), "building", _STATUS_TTL)
     cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
-    threading.Thread(target=_run_build, args=(steam_id,), daemon=True).start()
+    threading.Thread(target=_run_build, args=(steam_id, owned), daemon=True).start()
     return {"status": "building", "steam_id": steam_id}
 
 
@@ -471,6 +499,22 @@ def session_status(steam_id: str):
         done, total = int(done_s), int(total_s)
     except ValueError:
         done, total = 0, 0
+
+    # No cache status (Redis down / key expired) or no progress yet → consult the
+    # DB copy of the status (written by /session and the build worker) so a
+    # failure is NEVER invisible: previously a dead Redis meant every failed or
+    # killed build showed "building 0/0" forever (2026-09-15 incident, 23.3c).
+    if not status or (done, total) == (0, 0):
+        row = db.get_snapshot(steam_id) or {}
+        if row.get("status") == "failed":
+            return {"status": "failed", "error": row.get("error") or _RETRY_HINT}
+        if not status:
+            age = _row_age_seconds(row)
+            if row.get("status") == "building" and age is not None and age < SNAPSHOT_WAIT_MAX:
+                return {"status": "building", "progress": {"done": 0, "total": 0, "pct": 0},
+                        "note": "live progress unavailable"}
+            return {"status": "failed", "error": _RETRY_HINT}
+
     pct = int(done * 100 / total) if total else 0
     return {"status": "building", "progress": {"done": done, "total": total, "pct": pct}}
 
@@ -626,8 +670,14 @@ if _missing:
           "related features will fail until set.")
 else:
     print("[startup] all required secrets present.")
+if cache.using_redis():
+    _redis_state = "upstash" if cache.ping() else (
+        "upstash UNREACHABLE — check UPSTASH_REDIS_REST_URL/TOKEN (rate limits fall back to "
+        "per-instance in-memory; build status falls back to the DB row)")
+else:
+    _redis_state = "in-memory"
 print(f"[startup] storage={'supabase' if storage.using_supabase() else 'local'} "
-      f"| redis={'upstash' if cache.using_redis() else 'in-memory'} "
+      f"| redis={_redis_state} "
       f"| db={'on' if db.using_db() else 'off'}")
 
 threading.Thread(target=_warmup, daemon=True).start()

@@ -82,8 +82,21 @@ def load_schemas(steam_id: str = STEAM_ID) -> dict:
     return json.loads(p.read_text()) if p.exists() else {}
 
 
+PRIVATE_PROFILE_MSG = (
+    "This Steam profile is private. Set 'Game details' to Public in "
+    "Steam → Profile → Privacy Settings, then try again."
+)
+
+
 class PrivateProfileError(RuntimeError):
     """Raised when a profile is private / friends-only and exposes no games."""
+
+
+def is_private_owned_payload(owned: dict) -> bool:
+    """True if a GetOwnedGames payload is the empty-response shape Steam returns
+    for private / friends-only profiles (no 'games' key at all). Used by the API
+    to reject a private profile UP-FRONT instead of starting a build."""
+    return owned.get("response", {}).get("games") is None
 
 
 def _user_dir(steam_id: str) -> Path:
@@ -172,26 +185,26 @@ def _fetch_one(kind: str, steam_id: str, appid: int) -> tuple[str, int, dict]:
     return kind, appid, {}
 
 
-def build_snapshot(steam_id: str = STEAM_ID, progress_cb=None) -> None:
+def build_snapshot(steam_id: str = STEAM_ID, progress_cb=None, owned: dict | None = None) -> None:
     """Fetch one user's Steam data concurrently and write 4 JSON files into
     data/snapshot/<steam_id>/. Raises PrivateProfileError if the profile is private.
 
     `progress_cb(done, total)` is called as calls complete, so a UI can show a
-    live progress bar (total = number of games * 3 endpoints)."""
+    live progress bar (total = number of games * 3 endpoints).
+    `owned` = an already-fetched GetOwnedGames payload (the API's up-front
+    privacy check) so the build doesn't repeat that call."""
     steam_id = str(steam_id)
     out = _user_dir(steam_id)
     out.mkdir(parents=True, exist_ok=True)
 
-    print(f"Fetching owned games for {steam_id}...")
-    owned = steam_client.get_owned_games(steam_id)
+    if owned is None:
+        print(f"Fetching owned games for {steam_id}...")
+        owned = steam_client.get_owned_games(steam_id)
     games = owned.get("response", {}).get("games")
 
     # A private/friends-only profile returns an empty response with no "games" key.
     if games is None:
-        raise PrivateProfileError(
-            "This Steam profile is private. Set 'Game details' to Public in "
-            "Steam → Profile → Privacy Settings, then try again."
-        )
+        raise PrivateProfileError(PRIVATE_PROFILE_MSG)
 
     print(f"Found {len(games)} games. Fetching per-game data ({_FETCH_WORKERS} workers)...")
 
@@ -234,7 +247,7 @@ def build_snapshot(steam_id: str = STEAM_ID, progress_cb=None) -> None:
     print(f"Snapshot complete — {len(games)} games, 4 files in {out}/")
 
 
-def _build_with_lock(steam_id: str, progress_cb=None) -> None:
+def _build_with_lock(steam_id: str, progress_cb=None, owned: dict | None = None) -> None:
     """Build a snapshot under a distributed lock so two concurrent first-time
     visitors (or a retry) don't both fetch the whole library at once. If another
     worker holds the lock, wait for it to finish and reuse its result; only build
@@ -250,7 +263,7 @@ def _build_with_lock(steam_id: str, progress_cb=None) -> None:
             if progress_cb:
                 progress_cb(done, total)
         try:
-            build_snapshot(steam_id, progress_cb=hb)
+            build_snapshot(steam_id, progress_cb=hb, owned=owned)
         finally:
             cache.release_lock(lock_key)
 
@@ -273,10 +286,12 @@ def ensure_snapshot(
     steam_id: str = STEAM_ID,
     max_age_days: float | None = None,
     progress_cb=None,
+    owned: dict | None = None,
 ) -> None:
     """Build the snapshot if this user has none, or if `max_age_days` is given and
     the existing one is older than that. Otherwise reuse the cached snapshot.
-    Builds run under a lock (see _build_with_lock) to avoid duplicate fetches."""
+    Builds run under a lock (see _build_with_lock) to avoid duplicate fetches.
+    `owned` = a pre-fetched GetOwnedGames payload to reuse (see build_snapshot)."""
     need_build = not has_snapshot(steam_id)
     if not need_build and max_age_days is not None:
         age = snapshot_age_days(steam_id)
@@ -284,7 +299,7 @@ def ensure_snapshot(
             print(f"Snapshot is {age:.1f} days old (> {max_age_days}) — refreshing...")
             need_build = True
     if need_build:
-        _build_with_lock(steam_id, progress_cb=progress_cb)
+        _build_with_lock(steam_id, progress_cb=progress_cb, owned=owned)
 
 
 def local_snapshot_dir(steam_id: str = STEAM_ID) -> Path:

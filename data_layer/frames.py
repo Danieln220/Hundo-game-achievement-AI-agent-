@@ -19,13 +19,40 @@ from pathlib import Path
 
 import pandas as pd
 
-GAMES_COLUMNS = ["appid", "name", "playtime"]
-ACHIEVEMENTS_COLUMNS = ["appid", "api_name", "display_name", "description", "rarity_pct", "hidden"]
-PLAYER_UNLOCKS_COLUMNS = ["appid", "api_name", "achieved", "unlock_time"]
+# Column order AND dtype are part of the contract. The dtypes matter even for
+# EMPTY frames: a column-less/object-typed empty `achieved` makes
+# `pu[pu["achieved"]]` a COLUMN selection instead of a boolean mask (pandas
+# treats an object Series as a list of labels) → a frame with no columns →
+# KeyError: 'appid' downstream. That was the live 500 on zero-unlock profiles
+# (2026-09-15 incident).
+GAMES_DTYPES = {"appid": "int64", "name": "str", "playtime": "int64"}
+ACHIEVEMENTS_DTYPES = {
+    "appid": "int64", "api_name": "str", "display_name": "str", "description": "str",
+    "rarity_pct": "float64", "hidden": "bool",
+}
+PLAYER_UNLOCKS_DTYPES = {"appid": "int64", "api_name": "str", "achieved": "bool", "unlock_time": "int64"}
+
+GAMES_COLUMNS = list(GAMES_DTYPES)
+ACHIEVEMENTS_COLUMNS = list(ACHIEVEMENTS_DTYPES)
+PLAYER_UNLOCKS_COLUMNS = list(PLAYER_UNLOCKS_DTYPES)
 
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def _typed(rows: list[dict], dtypes: dict[str, str]) -> pd.DataFrame:
+    """DataFrame with the contract's columns AND dtypes, empty or not. If Steam
+    ever ships a value that can't be cast (e.g. a null playtime), keep the
+    untyped frame rather than fail the whole profile — non-empty frames get the
+    right natural dtypes anyway; the cast is what makes EMPTY frames correct."""
+    df = pd.DataFrame(rows, columns=list(dtypes))
+    if "rarity_pct" in df.columns:
+        df["rarity_pct"] = pd.to_numeric(df["rarity_pct"], errors="coerce")
+    try:
+        return df.astype(dtypes)
+    except (TypeError, ValueError):
+        return df
 
 
 def frames_from_dir(snap: Path | str) -> dict[str, pd.DataFrame]:
@@ -40,16 +67,16 @@ def frames_from_dir(snap: Path | str) -> dict[str, pd.DataFrame]:
     ach_data = _read_json(snap / "achievements.json")
     pct_data = _read_json(snap / "global_pct.json")
 
-    games_df = pd.DataFrame(
+    games_df = _typed(
         [
             {
                 "appid":    g["appid"],
                 "name":     g.get("name", str(g["appid"])),
-                "playtime": g.get("playtime_forever", 0),
+                "playtime": g.get("playtime_forever", 0) or 0,
             }
             for g in games_list
         ],
-        columns=GAMES_COLUMNS,
+        GAMES_DTYPES,
     )
 
     ach_rows: list[dict] = []
@@ -94,15 +121,11 @@ def frames_from_dir(snap: Path | str) -> dict[str, pd.DataFrame]:
                 "appid":       appid,
                 "api_name":    a.get("apiname", ""),
                 "achieved":    bool(a.get("achieved", 0)),
-                "unlock_time": a.get("unlocktime", 0),
+                "unlock_time": a.get("unlocktime", 0) or 0,
             })
-
-    achievements_df = pd.DataFrame(ach_rows, columns=ACHIEVEMENTS_COLUMNS)
-    achievements_df["rarity_pct"] = pd.to_numeric(achievements_df["rarity_pct"], errors="coerce")
-    player_unlocks_df = pd.DataFrame(unlock_rows, columns=PLAYER_UNLOCKS_COLUMNS)
 
     return {
         "games":          games_df,
-        "achievements":   achievements_df,
-        "player_unlocks": player_unlocks_df,
+        "achievements":   _typed(ach_rows, ACHIEVEMENTS_DTYPES),
+        "player_unlocks": _typed(unlock_rows, PLAYER_UNLOCKS_DTYPES),
     }

@@ -46,6 +46,25 @@ def _tier(pct) -> str | None:
     return "common"
 
 
+def header_stats(frames: dict[str, pd.DataFrame]) -> dict:
+    """Headline numbers for the session header: games, unlocked, total, perfect.
+    Pure function over the 3 frames (testable without the API/Steam); relies on
+    the frames' dtype contract — an untyped empty `achieved` column would turn
+    the boolean mask below into a column selection (the 2026-09-15 500)."""
+    ach, pu, games = frames["achievements"], frames["player_unlocks"], frames["games"]
+    total_per = ach.groupby("appid").size()
+    unlocked_per = (
+        pu[pu["achieved"].astype(bool)].groupby("appid").size()
+          .reindex(total_per.index, fill_value=0)
+    )
+    return {
+        "games": int(len(games)),
+        "unlocked": int(pu["achieved"].astype(bool).sum()),
+        "total": int(len(ach)),
+        "perfect": int(((unlocked_per == total_per) & (total_per > 0)).sum()),
+    }
+
+
 def build_library(steam_id: str) -> dict:
     frames = load_frames(steam_id)
     games, ach, pu = frames["games"], frames["achievements"], frames["player_unlocks"]
