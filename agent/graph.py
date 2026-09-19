@@ -935,16 +935,21 @@ def _tag_phases(remaining: list, target: str) -> list:
     )
     tags: dict[int, tuple[str, bool]] = {}
     try:
+        # thinking OFF: this is bulk tagging — with reasoning it burned ~15k tokens /
+        # ~60s and routinely hit the cap (→ silently no phases); without: ~1.5s.
         raw = call_llm(f"Game: {target}\n\nAchievements:\n{listing}",
-                       model=DEEPSEEK_MODEL_FLASH, system=_ROADMAP_PHASE_SYSTEM)
+                       model=DEEPSEEK_MODEL_FLASH, system=_ROADMAP_PHASE_SYSTEM,
+                       max_tokens=2048, thinking=False)
         for line in raw.splitlines():
             m = re.match(r"\s*(\d+)\s*[:.\)]\s*([a-zA-Z]+)(\s+missable)?", line.strip())
             if not m:
                 continue
             cat = m.group(2).lower()
             tags[int(m.group(1)) - 1] = (cat if cat in _PHASE_CATEGORIES else "misc", bool(m.group(3)))
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[roadmap] phase tagging failed: {exc}")
+    if len(tags) < len(items):
+        print(f"[roadmap] phase tagging covered {len(tags)}/{len(items)} items — rest → misc")
 
     for i, a in enumerate(items):
         cat, missable = tags.get(i, ("misc", False))

@@ -93,7 +93,7 @@ def _record(usage_obj) -> None:
 
 
 def call_llm(prompt: str, model: str = DEEPSEEK_MODEL_FLASH, system: str = "",
-             on_token=None, max_tokens: int | None = None) -> str:
+             on_token=None, max_tokens: int | None = None, thinking: bool = True) -> str:
     """Call DeepSeek and return the stripped text response.
 
     temperature=0 keeps code generation deterministic across retries.
@@ -105,12 +105,18 @@ def call_llm(prompt: str, model: str = DEEPSEEK_MODEL_FLASH, system: str = "",
 
     `max_tokens` bounds the response (defaults to the global LLM_MAX_TOKENS ceiling
     so a runaway generation can't burn unbounded quota). It covers REASONING tokens
-    too — keep per-call caps >= ~1024 or a thinking model answers with nothing."""
+    too — keep per-call caps >= ~1024 or a thinking model answers with nothing.
+
+    `thinking=False` skips the model's reasoning phase. Use it ONLY for mechanical,
+    self-evident tasks (bulk tagging): measured 60-item phase tagging = ~15k reasoning
+    tokens / 57s with thinking vs 257 tokens / 1.5s without, same quality. Judgement
+    calls (e.g. title extraction) got WORSE without it — keep the default there."""
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
     max_tokens = max_tokens or LLM_MAX_TOKENS
+    extra = {} if thinking else {"extra_body": {"thinking": {"type": "disabled"}}}
 
     if on_token is not None:
         try:
@@ -118,7 +124,7 @@ def call_llm(prompt: str, model: str = DEEPSEEK_MODEL_FLASH, system: str = "",
             usage_obj = None
             stream = _client.chat.completions.create(
                 model=model, messages=messages, temperature=0, stream=True,
-                max_tokens=max_tokens,
+                max_tokens=max_tokens, **extra,
                 # Ask for a final usage chunk so streamed calls are counted too.
                 stream_options={"include_usage": True},
             )
@@ -149,7 +155,7 @@ def call_llm(prompt: str, model: str = DEEPSEEK_MODEL_FLASH, system: str = "",
                 model=model,
                 messages=messages,
                 temperature=0,
-                max_tokens=max_tokens,
+                max_tokens=max_tokens, **extra,
             )
             _record(getattr(resp, "usage", None))
             choice = resp.choices[0]
