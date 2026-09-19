@@ -104,7 +104,8 @@ def call_llm(prompt: str, model: str = DEEPSEEK_MODEL_FLASH, system: str = "",
     returned. Streaming failures fall back to the normal buffered call.
 
     `max_tokens` bounds the response (defaults to the global LLM_MAX_TOKENS ceiling
-    so a runaway generation can't burn unbounded quota)."""
+    so a runaway generation can't burn unbounded quota). It covers REASONING tokens
+    too — keep per-call caps >= ~1024 or a thinking model answers with nothing."""
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -151,7 +152,14 @@ def call_llm(prompt: str, model: str = DEEPSEEK_MODEL_FLASH, system: str = "",
                 max_tokens=max_tokens,
             )
             _record(getattr(resp, "usage", None))
-            return resp.choices[0].message.content.strip()
+            choice = resp.choices[0]
+            text = (choice.message.content or "").strip()
+            # deepseek-v4 models REASON first and those tokens count against
+            # max_tokens — a too-small cap returns an EMPTY answer, not a short one.
+            if not text and choice.finish_reason == "length":
+                print(f"[llm] WARN {model}: max_tokens={max_tokens} exhausted by "
+                      "reasoning — empty answer (raise the cap)")
+            return text
         except _RETRYABLE as exc:
             last_exc = exc
             if attempt < _MAX_ATTEMPTS - 1:

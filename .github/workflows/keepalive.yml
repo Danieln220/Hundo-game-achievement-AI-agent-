@@ -1,0 +1,66 @@
+# Keep the free-tier backing services warm.
+#
+# Why this exists: Supabase pauses a free project after ~7 days of inactivity and
+# Upstash reclaims an idle free database — both happened on 2026-09-15 and took
+# the live site down (builds hung, rate limits silently stopped limiting).
+# Plain /health deliberately does NOT touch Redis (Step 15.6 keeps Render's
+# frequent health checks off the Upstash quota), so Render's own pings are not
+# enough to keep anything alive. This job touches both stores on purpose:
+#   /health?debug=1                -> live Redis round-trip (Upstash)
+#   /memory?steam_id=...           -> a SELECT against Postgres (Supabase)
+# It also fails loudly, so a broken backend shows up as a failed workflow run
+# instead of as a user reporting "the website isn't working".
+#
+# Secrets (repo -> Settings -> Secrets and variables -> Actions):
+#   KEEPALIVE_API_URL    e.g. https://hundo-api.onrender.com  (no trailing slash)
+#   KEEPALIVE_STEAM_ID   any SteamID64 that has visited the app
+# Both are secrets rather than literals because this repository is public.
+name: keepalive
+
+on:
+  schedule:
+    - cron: "17 6 * * *"   # daily 06:17 UTC — well inside Supabase's ~7-day idle window
+  workflow_dispatch:        # lets you run it by hand from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake the API and check Redis
+        env:
+          API: ${{ secrets.KEEPALIVE_API_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$API" || { echo "::error::KEEPALIVE_API_URL secret is not set"; exit 1; }
+
+          # Render's free tier cold-starts in ~30-60s, so retry before believing a failure.
+          for attempt in 1 2 3 4 5 6; do
+            if body=$(curl -sS --max-time 90 "$API/health?debug=1"); then
+              echo "attempt $attempt: $body"
+              if echo "$body" | grep -q '"redis_ok":true'; then
+                echo "redis OK"
+                exit 0
+              fi
+              # Reached the API but Redis is down — that is a real failure, not a cold start.
+              echo "::error::API is up but redis_ok is false — check the Upstash credentials on Render"
+              exit 1
+            fi
+            echo "attempt $attempt: API not responding yet, waiting..."
+            sleep 20
+          done
+          echo "::error::API did not respond after 6 attempts"
+          exit 1
+
+      - name: Touch Postgres
+        env:
+          API: ${{ secrets.KEEPALIVE_API_URL }}
+          SID: ${{ secrets.KEEPALIVE_STEAM_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$SID" || { echo "::error::KEEPALIVE_STEAM_ID secret is not set"; exit 1; }
+
+          code=$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' "$API/memory?steam_id=$SID")
+          echo "/memory -> HTTP $code"
+          test "$code" = "200" || { echo "::error::/memory returned $code — Supabase may be paused"; exit 1; }
+          echo "postgres OK"

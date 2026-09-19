@@ -59,7 +59,7 @@ def _smalltalk_reply(question: str) -> Optional[str]:
         return None
     try:
         resp = call_llm(question, model=DEEPSEEK_MODEL_FLASH, system=_TRIAGE_REPLY_SYSTEM,
-                        max_tokens=150).strip()
+                        max_tokens=1024).strip()
     except Exception:
         return None  # on any failure, fall through to the normal pipeline
     return None if _DATA_TOKEN in resp else resp
@@ -87,7 +87,7 @@ def distill_memory(current: str, question: str, answer: str) -> str:
             "Return the updated memory."
         )
         out = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_MEMORY_SYSTEM,
-                       max_tokens=400).strip()
+                       max_tokens=1536).strip()
         return (out or current)[:1500]
     except Exception:
         return current

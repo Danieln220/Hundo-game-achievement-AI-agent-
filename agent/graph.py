@@ -545,7 +545,7 @@ def chitchat_node(state: AgentState) -> AgentState:
     """Greeting / small-talk that the regex fast-path didn't catch — answer with a
     single friendly Flash reply instead of running the analysis pipeline."""
     answer = call_llm(state["question"], model=DEEPSEEK_MODEL_FLASH, system=_CHITCHAT_SYSTEM,
-                      max_tokens=200)
+                      max_tokens=1024)
     return {"answer": answer, "done": True}
 
 
@@ -559,7 +559,7 @@ def _run_verify(state: AgentState) -> Optional[str]:
         f"Code that ran:\n{state.get('last_code', '')}\n\n"
         f"Result: {state['last_result']}"
     )
-    resp = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_VERIFY_SYSTEM, max_tokens=300)
+    resp = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_VERIFY_SYSTEM, max_tokens=1024)
 
     retry, reason = False, ""
     for line in resp.splitlines():
@@ -628,16 +628,37 @@ def _match_owned_game(question: str, games_df: pd.DataFrame):
     return best
 
 
+_ROMAN = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7, "viii": 8,
+          "ix": 9, "x": 10, "xi": 11, "xii": 12, "xiii": 13}
+
+
+def _title_numbers(s: str) -> set[int]:
+    """Numbers in a game title — digits and Roman numerals ('Dark Souls III' → {3}).
+    A lone 'i' is skipped: it's far more often a word than a sequel number."""
+    nums = set()
+    for tok in re.findall(r"[a-z0-9]+", s.lower()):
+        if tok.isdigit():
+            nums.add(int(tok))
+        elif tok in _ROMAN and tok != "i":
+            nums.add(_ROMAN[tok])
+    return nums
+
+
 def _fuzzy_owned(title: str, games_df: pd.DataFrame, threshold: float = 0.82):
     """Best owned-game match for a short extracted TITLE — substring either way or a
     high fuzzy ratio (catches typos like 'Left 4 Ded 2'). Returns (name, appid) or
-    None when nothing is close (→ the user means a game they don't own)."""
+    None when nothing is close (→ the user means a game they don't own).
+    A title that names numbers must name the SAME numbers: a sequel is a different
+    game, not a typo ('Forza Horizon 6' scores 0.93 against an owned 'Forza Horizon 5')."""
     tl = (title or "").lower().strip()
     if not tl:
         return None
+    t_nums = _title_numbers(tl)
     best_score, best = 0.0, None
     for name, appid in zip(games_df["name"].astype(str), games_df["appid"]):
         nl = name.lower()
+        if t_nums and _title_numbers(nl) != t_nums:
+            continue
         score = difflib.SequenceMatcher(None, tl, nl).ratio()
         if tl in nl or nl in tl:
             score = max(score, 0.9)
@@ -670,7 +691,7 @@ def time_estimate_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> Ag
             f"Question: {state['question']}"
         )
         title = call_llm(prompt, model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_NAME_SYSTEM,
-                         max_tokens=50).strip()
+                         max_tokens=1024).strip()
         if title and title.upper() != "NONE":
             m2 = _fuzzy_owned(title, frames["games"])
             if m2:  # a game they own (matched through a typo/partial name)
@@ -955,13 +976,16 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
     # follow-ups all keep the proven sandbox path. The extra title-extraction call
     # only fires when no owned game name appears verbatim in the question.
     unowned_target = None
-    if not _match_owned_game(q, games_df):
+    owned_hit = _match_owned_game(q, games_df)
+    if not owned_hit:
         title = call_llm(
             f"{_format_history(state)}Question: {q}",
-            model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_NAME_SYSTEM, max_tokens=50,
+            model=DEEPSEEK_MODEL_FLASH, system=_TIMECOST_NAME_SYSTEM, max_tokens=1024,
         ).strip()
-        if title and title.upper() != "NONE" and not _fuzzy_owned(title, games_df):
-            unowned_target = title
+        if title and title.upper() != "NONE":
+            owned_hit = _fuzzy_owned(title, games_df)
+            if not owned_hit:
+                unowned_target = title
 
     code = ""
     unowned = False
@@ -996,8 +1020,9 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
             except Exception:
                 data = None
         if not data:
+            what = f"**{owned_hit[0]}**" if owned_hit else "that"
             return {
-                "answer": ("I couldn't build a roadmap for that — try naming a specific game, "
+                "answer": (f"I couldn't build a roadmap for {what} — try naming a specific game, "
                            "e.g. \"build me a plan to 100% Rocket League\"."),
                 "code_history": [code],
                 "done": True,
@@ -1338,7 +1363,7 @@ def finalize_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSt
             f"Question: {state['question']}\nAnswer: {answer}",
             model=DEEPSEEK_MODEL_FLASH,
             system=_INSIGHT_SYSTEM,
-            max_tokens=150,
+            max_tokens=1024,
         )
         if raw and raw.strip().upper() != "NONE":
             insight = raw.strip()
