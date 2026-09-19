@@ -93,6 +93,20 @@ USE_REDIS = bool(UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)
 RATE_LIMIT_ASK_PER_MIN = int(os.environ.get("RATE_LIMIT_ASK_PER_MIN", "15"))
 RATE_LIMIT_ASK_PER_DAY = int(os.environ.get("RATE_LIMIT_ASK_PER_DAY", "150"))
 RATE_LIMIT_SESSION_PER_MIN = int(os.environ.get("RATE_LIMIT_SESSION_PER_MIN", "10"))
+# /chart = one Pro call + a sandbox spawn on a client-supplied result → metered.
+RATE_LIMIT_CHART_PER_MIN = int(os.environ.get("RATE_LIMIT_CHART_PER_MIN", "10"))
+RATE_LIMIT_CHART_PER_DAY = int(os.environ.get("RATE_LIMIT_CHART_PER_DAY", "100"))
+# /library, /popular, /memory — no LLM, but Steam/storage/DB work per call.
+RATE_LIMIT_READ_PER_MIN = int(os.environ.get("RATE_LIMIT_READ_PER_MIN", "30"))
+# /session/status is polled every ~1.5s during a build (= 40/min for one tab).
+RATE_LIMIT_STATUS_PER_MIN = int(os.environ.get("RATE_LIMIT_STATUS_PER_MIN", "90"))
+
+# Request-size caps for /ask (23.2e). Over-long questions are rejected; history is
+# TRIMMED (not rejected) to the last N turns with each answer clipped — follow-ups
+# only need the gist, and a 45-line roadmap re-sent every turn is pure token cost.
+MAX_QUESTION_CHARS = int(os.environ.get("MAX_QUESTION_CHARS", "1000"))
+MAX_HISTORY_TURNS = int(os.environ.get("MAX_HISTORY_TURNS", "6"))
+MAX_HISTORY_ANSWER_CHARS = int(os.environ.get("MAX_HISTORY_ANSWER_CHARS", "600"))
 
 # Snapshot build-lock TTL (seconds). SHORT + heartbeat (Step 15.6): the builder
 # refreshes the lock every progress tick, so a live build keeps it; a DEAD build

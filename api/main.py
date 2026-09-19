@@ -19,11 +19,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from config import (
     CORS_ORIGINS, CHART_TTL_HOURS, CHART_MAX_FILES, missing_secrets,
     RATE_LIMIT_ASK_PER_MIN, RATE_LIMIT_ASK_PER_DAY, RATE_LIMIT_SESSION_PER_MIN,
+    RATE_LIMIT_CHART_PER_MIN, RATE_LIMIT_CHART_PER_DAY, RATE_LIMIT_READ_PER_MIN,
+    RATE_LIMIT_STATUS_PER_MIN, MAX_QUESTION_CHARS, MAX_HISTORY_TURNS,
+    MAX_HISTORY_ANSWER_CHARS,
     SNAPSHOT_TTL_DAYS, PUBLIC_API_URL, FRONTEND_URL, ANSWER_CACHE_TTL_SECONDS,
     SNAPSHOT_WAIT_MAX,
 )
@@ -42,6 +45,25 @@ from data_layer.snapshot import (
 )
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
+
+# Bounded background work (23.2f): an unbounded Thread per request let a burst of
+# /session or /ask calls spawn arbitrarily many builds / Flash calls on a 512MB box.
+# Excess work QUEUES — a queued build still reports "building" to the poller.
+_BUILD_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="build")
+_MEMORY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="memory")
+
+# A SteamID64 is exactly 17 digits (23.2d). Every id that reaches a filesystem
+# path, a bucket key, a DB filter or the sandbox argv is checked against this.
+_STEAM_ID64_RE = re.compile(r"^\d{17}$")
+
+
+def _sid(steam_id: str) -> str:
+    """Validate a client-supplied SteamID64 or 400. Returns it unchanged."""
+    if not isinstance(steam_id, str) or not _STEAM_ID64_RE.match(steam_id):
+        raise HTTPException(status_code=400, detail="Invalid Steam ID (expected a 17-digit SteamID64).")
+    return steam_id
+
 
 _CHARTS_DIR = Path(__file__).parent.parent / "data" / "charts"
 _CHARTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -90,7 +112,13 @@ app = FastAPI(title="Hundo API", version="1.0", description="Steam achievement A
 
 def _client_ip(request: Request) -> str:
     """Real client IP. On Render/Vercel we sit behind a proxy, so the original
-    client is the first hop in X-Forwarded-For."""
+    client is the first hop in X-Forwarded-For.
+    Spoof-checked LIVE 2026-09-19 (23.2a): sending `X-Forwarded-For: 9.9.9.9` (and
+    a two-hop variant) to the deployed API still yielded the real client IP —
+    Render's edge REPLACES the client-supplied header, so the first hop is
+    trustworthy there. Do NOT switch to the rightmost hop: behind extra internal
+    proxies that is an internal IP and would put every user in ONE bucket.
+    Re-run that curl test if the hosting/proxy setup ever changes."""
     xff = request.headers.get("x-forwarded-for")
     if xff:
         return xff.split(",")[0].strip()
@@ -104,6 +132,12 @@ _RATE_RULES = {
     "/ask": ("ask", _ASK_WINDOWS),
     "/ask/stream": ("ask", _ASK_WINDOWS),
     "/session": ("session", [("min", 60, RATE_LIMIT_SESSION_PER_MIN)]),
+    "/session/status": ("status", [("min", 60, RATE_LIMIT_STATUS_PER_MIN)]),
+    "/chart": ("chart", [("min", 60, RATE_LIMIT_CHART_PER_MIN),
+                         ("day", 86400, RATE_LIMIT_CHART_PER_DAY)]),
+    "/library": ("library", [("min", 60, RATE_LIMIT_READ_PER_MIN)]),
+    "/popular": ("popular", [("min", 60, RATE_LIMIT_READ_PER_MIN)]),
+    "/memory": ("memory", [("min", 60, RATE_LIMIT_READ_PER_MIN)]),
 }
 
 
@@ -236,6 +270,39 @@ class AskReq(BaseModel):
     steam_id: Optional[str] = None     # None → server's default STEAM_ID
     history: Optional[list[dict]] = None
     with_insight: bool = True
+
+    @field_validator("history")
+    @classmethod
+    def _trim_history(cls, v):
+        # 23.2e/22.4: keep the last N turns, clip each — trimmed, never rejected.
+        if not v:
+            return v
+        out = []
+        for t in v[-MAX_HISTORY_TURNS:]:
+            if not isinstance(t, dict):
+                continue
+            q = str(t.get("question") or "")[:MAX_QUESTION_CHARS]
+            a = str(t.get("answer") or "")
+            if len(a) > MAX_HISTORY_ANSWER_CHARS:
+                a = a[:MAX_HISTORY_ANSWER_CHARS] + " …"
+            out.append({"question": q, "answer": a})
+        return out
+
+
+def _check_question(req: AskReq) -> None:
+    """Reject a bad steam_id or an empty / over-long question with a readable 400
+    (a pydantic 422 carries a detail LIST, which the frontend can't display)."""
+    if req.steam_id is not None:
+        _sid(req.steam_id)
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Please type a question.")
+    if len(req.question) > MAX_QUESTION_CHARS:
+        raise HTTPException(status_code=400, detail=(
+            f"That question is too long ({len(req.question)} characters) — "
+            f"please keep it under {MAX_QUESTION_CHARS}."))
+
+
+_MAX_CHART_RESULT_BYTES = 64_000   # a real /ask echo is a few KB
 
 
 class ChartReq(BaseModel):
@@ -405,6 +472,7 @@ def session(req: SessionReq):
         steam_id = resolve_steam_id(req.profile)
     except SteamResolveError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    _sid(steam_id)   # resolver output reaches paths/keys — never trust it blindly
 
     if has_snapshot(steam_id):
         cache.set(_status_key(steam_id), "ready", _STATUS_TTL)
@@ -432,7 +500,7 @@ def session(req: SessionReq):
     db.upsert_snapshot(steam_id, status="building")
     cache.set(_status_key(steam_id), "building", _STATUS_TTL)
     cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
-    threading.Thread(target=_run_build, args=(steam_id, owned), daemon=True).start()
+    _BUILD_POOL.submit(_run_build, steam_id, owned)
     return {"status": "building", "steam_id": steam_id}
 
 
@@ -440,6 +508,7 @@ def session(req: SessionReq):
 def library(steam_id: str):
     """The full trophy-case dataset (profile, cards, games, curator highlights) for
     a built profile. Read-only transform over the snapshot — see data_layer/library."""
+    _sid(steam_id)
     if not has_snapshot(steam_id):
         raise HTTPException(status_code=404, detail="No snapshot yet — load the profile first.")
     lib = build_library(steam_id)
@@ -457,6 +526,7 @@ def popular(steam_id: str):
     """Currently most-played Steam games the user does NOT own — discovery picks for
     a fresh 100% (the unowned-roadmap path handles these). appdetails are cached
     per-app (shared across users) so this stays cheap."""
+    _sid(steam_id)
     from agent.search import cached_json
     owned: set[int] = set()
     if has_snapshot(steam_id):
@@ -484,6 +554,7 @@ def popular(steam_id: str):
 def session_status(steam_id: str):
     """Poll a build's progress. Returns ready (+ summary), building (+ progress),
     or failed (+ error). Cheap + fast — safe to poll every ~1.5s."""
+    _sid(steam_id)
     if has_snapshot(steam_id):
         summ = _session_summary(steam_id)
         db.upsert_user(steam_id, persona=summ["persona"], avatar=summ["avatar"])
@@ -539,18 +610,20 @@ def _update_memory_bg(steam_id: Optional[str], question: str, answer: Optional[s
                 db.save_memory(steam_id, updated)
         except Exception:
             pass
-    threading.Thread(target=work, daemon=True).start()
+    _MEMORY_POOL.submit(work)
 
 
 @app.get("/memory")
 def memory_get(steam_id: str):
     """What the agent remembers about this user (for transparency)."""
+    _sid(steam_id)
     return {"memory": db.get_memory(steam_id)}
 
 
 @app.delete("/memory")
 def memory_delete(steam_id: str):
     """Wipe this user's remembered memory."""
+    _sid(steam_id)
     db.delete_memory(steam_id)
     return {"ok": True}
 
@@ -560,6 +633,7 @@ def ask(req: AskReq):
     """Answer a question. Returns the agent result (answer, route, trace fields,
     chart_url or chart_pending). For chart_pending answers, the client then calls
     /chart with this same result (answer-first UX)."""
+    _check_question(req)
     t0 = time.perf_counter()
     # Deterministic fast-path (19.3): common shapes answered straight from the
     # snapshot — no LLM, no memory read/update (nothing durable to distill).
@@ -601,6 +675,7 @@ def ask_stream(req: AskReq):
     """Streaming variant of /ask (Server-Sent Events). Emits `progress` events as
     each agent node fires, then a final `result` event with the serialized payload.
     The client reads this as a stream (fetch + ReadableStream)."""
+    _check_question(req)   # before the stream opens → a normal 400, not a broken SSE
     def gen():
         t0 = time.perf_counter()
         # Deterministic fast-path (19.3): instant single result event, no LLM.
@@ -648,6 +723,12 @@ def chart(req: ChartReq):
     """Second-pass chart generation for a prior /ask result. Returns a JSON
     chart SPEC the frontend renders itself (19.2). chart_url is kept (always
     null) so an older cached frontend fails soft during a deploy overlap."""
+    # The echoed result feeds a Pro prompt + a sandbox run → bound it and check
+    # the id it carries (load_frames(result["steam_id"]) touches the filesystem).
+    if len(json.dumps(req.result, default=str)) > _MAX_CHART_RESULT_BYTES:
+        raise HTTPException(status_code=413, detail="Chart request too large.")
+    if req.result.get("steam_id") is not None:
+        _sid(req.result["steam_id"])
     return {"chart_spec": make_chart(req.result), "chart_url": None}
 
 
