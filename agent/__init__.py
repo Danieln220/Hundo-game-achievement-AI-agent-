@@ -9,10 +9,11 @@ Keep ALL UI code out of this package. If app.py stays thin and only calls
 run(), the React + FastAPI upgrade is 'wrap run() in an endpoint', not a
 rewrite."""
 import re
+import threading
 from typing import Optional
 
 from config import STEAM_ID, DEEPSEEK_MODEL_FLASH
-from data_layer.snapshot import load_frames
+from data_layer.snapshot import load_frames, snapshot_version
 from .graph import build_graph, generate_chart_spec
 from .fastpath import fast_answer  # noqa: F401 — public seam (API calls it before run())
 from .llm import call_llm, new_usage, use_usage, reset_usage, call_with_usage
@@ -93,6 +94,31 @@ def distill_memory(current: str, question: str, answer: str) -> str:
         return current
 
 
+# LangGraph recompiled the whole graph on EVERY request (23.6e). The nodes close
+# over `frames`, so the compiled app is cached per (user, snapshot build) — a
+# rebuild changes the version and evicts the stale one automatically.
+_GRAPH_CACHE: dict[str, tuple[str, object]] = {}
+_GRAPH_LOCK = threading.Lock()
+_GRAPH_CACHE_MAX = 8
+
+
+def _graph_for(steam_id: str, frames: dict):
+    """Compiled graph for this user's current snapshot (cached)."""
+    version = snapshot_version(steam_id) or ""
+    if not version:
+        return build_graph(frames)
+    with _GRAPH_LOCK:
+        hit = _GRAPH_CACHE.get(steam_id)
+        if hit and hit[0] == version:
+            return hit[1]
+    app = build_graph(frames)
+    with _GRAPH_LOCK:
+        if len(_GRAPH_CACHE) >= _GRAPH_CACHE_MAX:
+            _GRAPH_CACHE.pop(next(iter(_GRAPH_CACHE)), None)
+        _GRAPH_CACHE[steam_id] = (version, app)
+    return app
+
+
 def run(
     question: str,
     steam_id: Optional[str] = None,
@@ -135,7 +161,7 @@ def run(
                 "done": True,
             }
 
-        app = build_graph(frames)
+        app = _graph_for(steam_id, frames)
         try:
             result = app.invoke({
                 "question": question,
@@ -191,7 +217,7 @@ def run_stream(
         yield "result", {"answer": "No snapshot data found for this profile.", "done": True}
         return
 
-    app = build_graph(frames)
+    app = _graph_for(steam_id, frames)
 
     # Run the graph in a background thread so answer TOKENS can stream out (via a
     # queue) WHILE a node is still running — app.stream alone only yields between

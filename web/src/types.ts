@@ -77,6 +77,10 @@ export interface AskResult {
   done?: boolean;
   steam_id?: string;
   question?: string;
+  // How a roadmap's dataset was produced (23.6a): "deterministic" (pandas over
+  // your snapshot), "codegen" (the agent wrote + ran pandas), "live_fetch"
+  // (fetched from Steam for a game you don't own).
+  method?: "deterministic" | "codegen" | "live_fetch" | null;
 }
 
 export interface SessionResult {

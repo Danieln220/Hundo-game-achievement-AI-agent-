@@ -13,6 +13,16 @@ export default function ReasoningTrace({ result }: { result: AskResult }) {
         </>
       )}
 
+      {result.method && (
+        <p className="muted small">
+          {result.method === "deterministic"
+            ? "Computed directly from your snapshot — locked achievements ranked by global rarity. No code generation needed, so nothing here can be invented."
+            : result.method === "live_fetch"
+            ? "Fetched live from Steam (you don't own this game) — every achievement is listed as locked."
+            : "The agent wrote pandas for this and ran it in the sandbox (code below)."}
+        </p>
+      )}
+
       {result.interpretation && (
         <p className="muted small">Interpretation: {result.interpretation}</p>
       )}

@@ -217,11 +217,29 @@ def _norm_question(q: str) -> str:
     return re.sub(r"\s+", " ", (q or "").strip().lower()).strip(" ?!.")
 
 
+def _memory_fingerprint(memory: str) -> str:
+    """A COARSE fingerprint of the user's memory (23.6g).
+
+    The key used to hash the memory TEXT, but the distill thread rewrites memory
+    after every /ask — so an answer was stored under the pre-turn memory and
+    looked up under the post-turn one. Measured live: the same question ran the
+    full agent TWICE and only hit on the third ask. Fingerprinting the memory's
+    durable SHAPE (its bullet lines, normalized and sorted) means cosmetic
+    rewording no longer misses, while a real change in what we remember still
+    invalidates the personalized answers."""
+    lines = sorted(
+        re.sub(r"\s+", " ", ln.strip(" -•\t").lower()).strip()
+        for ln in (memory or "").splitlines()
+        if ln.strip(" -•\t")
+    )
+    return hashlib.sha1("|".join(lines).encode()).hexdigest()[:12]
+
+
 def _answer_cache_key(req: "AskReq", memory: str) -> Optional[str]:
     """Cache key, or None when this request shouldn't touch the cache: caching is
     disabled, it's a follow-up (history changes the answer), or the snapshot has
-    no local build marker yet. Memory is hashed in so a personalization change
-    misses instead of serving a stale-toned answer."""
+    no local build marker yet. The memory FINGERPRINT (not its text) is hashed in,
+    so a personalization change misses but a reworded one doesn't (23.6g)."""
     if ANSWER_CACHE_TTL_SECONDS <= 0 or req.history:
         return None
     sid = req.steam_id or "default"
@@ -229,7 +247,7 @@ def _answer_cache_key(req: "AskReq", memory: str) -> Optional[str]:
     if not ver:
         return None
     h = hashlib.sha1(
-        f"{_norm_question(req.question)}|{memory}|{int(req.with_insight)}".encode()
+        f"{_norm_question(req.question)}|{_memory_fingerprint(memory)}|{int(req.with_insight)}".encode()
     ).hexdigest()
     return f"ans:{sid}:{ver}:{h}"
 
@@ -690,7 +708,9 @@ def ask(req: AskReq):
     if hit:
         db.log_query(req.steam_id, req.question, f"cached:{hit.get('route') or ''}",
                      int((time.perf_counter() - t0) * 1000))
-        _update_memory_bg(req.steam_id, req.question, hit.get("answer"), mem)
+        # No distill on a cache hit: the exchange is a repeat, so there is nothing
+        # new to remember — and rewriting memory here would invalidate the very
+        # cache entry we just served (23.6g).
         return hit
     result = run(
         req.question,
@@ -733,7 +753,7 @@ def ask_stream(req: AskReq):
         if hit:
             db.log_query(req.steam_id, req.question, f"cached:{hit.get('route') or ''}",
                          int((time.perf_counter() - t0) * 1000))
-            _update_memory_bg(req.steam_id, req.question, hit.get("answer"), mem)
+            # No distill on a cache hit (23.6g) — see /ask.
             yield _sse("result", hit)
             return
         for kind, payload in run_stream(

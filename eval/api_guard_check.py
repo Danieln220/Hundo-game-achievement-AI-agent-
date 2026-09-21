@@ -69,5 +69,19 @@ if m.has_snapshot(SID):
 else:
     print("SKIP  happy paths (no local snapshot for", SID, ")")
 
+# ── 23.6g: the answer-cache key must survive a cosmetic memory rewrite ───────
+fp = m._memory_fingerprint
+MEM = "- Only plays single-player games\n- Goal: 100% Hollow Knight"
+check("memory fingerprint ignores bullet ORDER",
+      fp(MEM) == fp("- Goal: 100% Hollow Knight\n- Only plays single-player games"))
+check("memory fingerprint ignores case/whitespace",
+      fp(MEM) == fp("-   only plays SINGLE-PLAYER games\n- goal: 100% hollow knight"))
+check("memory fingerprint changes on a real new fact",
+      fp(MEM) != fp(MEM + "\n- Prefers short games"))
+check("empty memory is stable", fp("") == fp(None))
+k1 = m._answer_cache_key(m.AskReq(question="rarest?", steam_id=SID), MEM)
+k2 = m._answer_cache_key(m.AskReq(question="  Rarest? ", steam_id=SID), MEM + "  ")
+check("same question + same memory shape → same cache key", k1 is not None and k1 == k2, f"{k1} vs {k2}")
+
 print(f"\n{'ALL PASSED' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)

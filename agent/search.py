@@ -56,29 +56,92 @@ def web_search(query: str, max_results: int = 3) -> list[dict]:
     ]
 
 
+def _redis():
+    """The shared cache, or None when it isn't configured (local dev, eval).
+    Imported LAZILY so the agent package keeps working — and stays importable —
+    with no cache layer at all."""
+    try:
+        from data_layer import cache as _c
+        return _c if _c.using_redis() else None
+    except Exception:
+        return None
+
+
 def cached_json(cache_key: str, producer, ttl_seconds: float = _CACHE_TTL_SECONDS):
-    """Generic SHARED on-disk JSON cache. On a miss (or expired entry) calls
-    `producer()` and caches its result if truthy (never pins a transient failure).
+    """Generic SHARED JSON cache (Redis when configured, else on-disk). On a miss
+    (or expired entry) calls `producer()` and caches its result if truthy — never
+    pins a transient failure.
 
     `cache_key` must identify the CONTENT (e.g. a game), NOT the user — so many
-    users requesting the same thing collapse to one upstream call. Multi-user note:
-    swap the backing store to Redis at deploy behind this same interface — see
-    CLAUDE.md "Multi-user / scaling architecture"."""
-    path = _CACHE_DIR / f"{hashlib.sha1(cache_key.encode('utf-8')).hexdigest()}.json"
+    users requesting the same thing collapse to one upstream call.
+
+    Redis backing (23.6b) is what CLAUDE.md's original note called for: the local
+    disk cache dies with every container, so each deploy re-bought every Tavily
+    search and every appdetails lookup. Redis makes the cache shared across
+    instances AND durable across deploys; disk stays as the dev/eval fallback."""
+    digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()
+    r = _redis()
+    if r is not None:
+        try:
+            raw = r.get(f"pg:{digest}")
+            if raw:
+                return json.loads(raw)
+        except Exception:
+            pass  # cache down → fall through to disk / producer
+
+    path = _CACHE_DIR / f"{digest}.json"
     try:
         if path.exists() and (time.time() - path.stat().st_mtime) < ttl_seconds:
-            return json.loads(path.read_text("utf-8"))
+            value = json.loads(path.read_text("utf-8"))
+            if r is not None:                      # warm Redis from the disk copy
+                try:
+                    r.set(f"pg:{digest}", json.dumps(value), int(ttl_seconds))
+                except Exception:
+                    pass
+            return value
     except Exception:
         pass
 
     value = producer()
     if value:
+        if r is not None:
+            try:
+                r.set(f"pg:{digest}", json.dumps(value), int(ttl_seconds))
+            except Exception:
+                pass
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(value), "utf-8")
         except Exception:
             pass
     return value
+
+
+def cache_get(cache_key: str, ttl_seconds: float = _CACHE_TTL_SECONDS):
+    """Read-only lookup in the shared cache (Redis, else disk). None on a miss."""
+    sentinel = object()
+    out = cached_json(cache_key, lambda: sentinel, ttl_seconds)
+    return None if out is sentinel else out
+
+
+def cache_put(cache_key: str, value, ttl_seconds: float = _CACHE_TTL_SECONDS) -> None:
+    """Write into the shared cache (both layers). Used where the value is built
+    INCREMENTALLY — e.g. roadmap phase tags, which accumulate per game across
+    users instead of being produced by one call (23.6b)."""
+    if not value:
+        return
+    digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()
+    r = _redis()
+    if r is not None:
+        try:
+            r.set(f"pg:{digest}", json.dumps(value), int(ttl_seconds))
+        except Exception:
+            pass
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (_CACHE_DIR / f"{digest}.json").write_text(json.dumps(value), "utf-8")
+    except Exception:
+        pass
 
 
 def cached_search(cache_key: str, query: str, max_results: int = 3) -> list[dict]:

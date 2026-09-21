@@ -12,6 +12,7 @@ the default STEAM_ID so the existing eval keeps working untouched.
 """
 import json
 import shutil
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -394,6 +395,15 @@ def local_snapshot_dir(steam_id: str = STEAM_ID) -> Path:
     return _resolve_snapshot_dir(str(steam_id))
 
 
+# One parsed copy of each user's frames per process, invalidated by the snapshot's
+# own mtime (23.6d/22.3). The JSON was previously re-parsed on EVERY request (and
+# again inside every sandbox spawn) — pure waste on a 0.1-CPU box. Frames are
+# treated as READ-ONLY by the agent; a rebuild bumps the marker and evicts.
+_FRAMES_CACHE: dict[str, tuple[str, dict]] = {}
+_FRAMES_LOCK = threading.Lock()
+_FRAMES_CACHE_MAX = 8      # small — this is a latency cache, not a store
+
+
 def load_frames(steam_id: str = STEAM_ID) -> dict[str, pd.DataFrame]:
     """Load this user's cached snapshot into the three frames the agent expects:
         games          -> appid, name, playtime
@@ -401,8 +411,24 @@ def load_frames(steam_id: str = STEAM_ID) -> dict[str, pd.DataFrame]:
         player_unlocks -> appid, api_name, achieved, unlock_time
     Returns empty (correctly-typed) frames if no snapshot exists for the user.
     The JSON→frames transform itself lives in data_layer.frames (dependency-free,
-    shared with the sandbox runner)."""
-    return frames_from_dir(local_snapshot_dir(steam_id))
+    shared with the sandbox runner). Parsed frames are cached in-process and
+    invalidated when the snapshot is rebuilt (see snapshot_version)."""
+    snap_dir = local_snapshot_dir(steam_id)
+    version = snapshot_version(steam_id) or ""
+    key = str(steam_id)
+    if version:
+        with _FRAMES_LOCK:
+            hit = _FRAMES_CACHE.get(key)
+            if hit and hit[0] == version:
+                return hit[1]
+
+    frames = frames_from_dir(snap_dir)
+    if version:
+        with _FRAMES_LOCK:
+            if len(_FRAMES_CACHE) >= _FRAMES_CACHE_MAX:
+                _FRAMES_CACHE.pop(next(iter(_FRAMES_CACHE)), None)
+            _FRAMES_CACHE[key] = (version, frames)
+    return frames
 
 
 if __name__ == "__main__":

@@ -20,11 +20,11 @@ from typing import Annotated, Literal, Optional, TypedDict
 import pandas as pd
 from langgraph.graph import START, END, StateGraph
 
-from config import MAX_RETRIES, DEEPSEEK_MODEL_PRO, DEEPSEEK_MODEL_FLASH
+from config import MAX_RETRIES, DEEPSEEK_MODEL_PRO, DEEPSEEK_MODEL_FLASH, ROADMAP_ENGINE
 from data_layer import steam_client
 from .sandbox import run_user_code
 from .llm import call_llm, call_with_usage, current_usage
-from .search import web_search, cached_search, cached_json
+from .search import web_search, cached_search, cached_json, cache_get, cache_put
 
 
 class AgentState(TypedDict, total=False):
@@ -53,6 +53,9 @@ class AgentState(TypedDict, total=False):
     done: bool
     _token_sink: Optional[object]      # run-only callable(token) for live answer streaming
     memory: Optional[str]              # cross-session per-user memory summary (API path only)
+    # How a roadmap's dataset was produced: "deterministic" (pandas over the
+    # snapshot) or "codegen" (Pro call + sandbox). Shown in the reasoning trace.
+    method: Optional[str]
 
 
 # ── System prompts ────────────────────────────────────────────────────────────
@@ -614,17 +617,52 @@ def _game_stats(appid, frames: dict[str, pd.DataFrame]) -> tuple[int, int, float
     return total, unlocked, playtime
 
 
+# A ONE-WORD title (Inside, Rust, Control, Prey, Ark, Limbo…) is usually also an
+# ordinary English word, so a whole-word hit is not enough — it needs a cue that
+# the user means the GAME (23.4a). Multi-word / numbered titles are distinctive
+# enough on their own. Being strict here is safe: a miss falls through to the LLM
+# title extractor, while a false positive silently answers about the wrong game.
+_ONE_WORD_TITLE = re.compile(r"^[a-z0-9']+$")
+_GAME_CUE_BEFORE = re.compile(
+    r"\b(in|for|on|of|about|to|with|play|playing|played|replay|complete|completing|"
+    r"finish|finishing|beat|beating|unlock|unlocking|100%|roadmap|plan|guide|"
+    r"achievements? in|my)\W+$"
+)
+_GAME_CUE_AFTER = re.compile(
+    r"^\W*(achievements?|roadmap|trophies|trophy|100%|completion|guide|dlc|progress)\b"
+)
+
+
 def _match_owned_game(question: str, games_df: pd.DataFrame):
     """Deterministically resolve an EXPLICITLY-named owned game from the question:
-    the longest owned game name that appears as a substring (case-insensitive).
-    Longest wins so 'Left 4 Dead 2' beats 'Left 4 Dead'. Returns (name, appid) or
-    None — None falls back to the LLM for typos / pronoun follow-ups."""
+    the longest owned game name that appears as a WHOLE-WORD match
+    (case-insensitive). Longest wins so 'Left 4 Dead 2' beats 'Left 4 Dead'.
+    Returns (name, appid) or None — None falls back to the LLM for typos /
+    pronoun follow-ups.
+
+    Whole-word, not bare substring (23.4a): owning a short-titled game like
+    Inside / Rust / Control / Prey / Ark silently scoped unrelated questions
+    ("am I INSIDE the top 10%?", "which games am I still RUSTy at?") to that
+    game, producing a confidently wrong answer. A trailing sequel number that
+    the owned title doesn't have also rejects the match, so owning 'Hades'
+    can't answer a question about 'Hades II' (same rule as _fuzzy_owned)."""
     ql = (question or "").lower()
     best = None
     for name, appid in zip(games_df["name"].astype(str), games_df["appid"]):
-        if len(name) >= 3 and name.lower() in ql:
+        nl = name.lower()
+        if len(name) < 3:
+            continue
+        for m in re.finditer(rf"(?<![0-9a-z]){re.escape(nl)}(?![0-9a-z])", ql):
+            tail = re.match(r"\s*([0-9]+|[ivx]+)\b", ql[m.end():])
+            if tail and not _title_numbers(nl) >= _title_numbers(tail.group(1)):
+                continue   # "<owned title> II" — a sequel we don't own
+            if _ONE_WORD_TITLE.match(nl) and not (
+                _GAME_CUE_BEFORE.search(ql[:m.start()]) or _GAME_CUE_AFTER.match(ql[m.end():])
+            ):
+                continue   # bare common word, no game cue → not a game reference
             if best is None or len(name) > len(best[0]):
                 best = (name, appid)
+            break
     return best
 
 
@@ -865,6 +903,72 @@ def _unowned_roadmap_data(name: str) -> Optional[dict]:
     return {"target": resolved, "total": len(achs), "remaining": achs}
 
 
+# Exclusions that map onto a phase CATEGORY are resolved from the tags the phase
+# pass already produced, instead of a second, independent model judgement (which
+# is why "skip multiplayer" used to drop 5 items while the phase view still
+# showed 12 multiplayer ones). Deterministic, free, and consistent by
+# construction. Anything that doesn't map to a category still goes to the model.
+_CATEGORY_WORDS = {
+    "multiplayer": r"multi-?player|online|co-?op|pvp|versus|competitive",
+    "dlc":         r"dlc|expansion|season pass|add-?on|paid content",
+    "grind":       r"grind(?:y|ing)?|farm(?:ing)?|repetitive",
+}
+_NEGATE_WORDS = r"skip|no|not|without|exclude|excluding|ignore|avoid|except|drop|omit|minus|hate|hating"
+_ONLY_WORDS = r"only|just"
+# Keyword fallback for items OUTSIDE the tagged window (an unowned game can have
+# far more achievements than we tag) — same categories, judged on name + text.
+_CATEGORY_TEXT = {
+    "multiplayer": re.compile(r"\b(multi-?player|online|co-?op|pvp|versus|team|friend)\b", re.I),
+    "dlc":         re.compile(r"\b(dlc|expansion|season pass)\b", re.I),
+    "grind":       re.compile(r"\b(grind|farm)\w*\b", re.I),
+}
+
+
+def _requested_categories(question: str) -> tuple[set[str], set[str]]:
+    """(exclude, include) phase categories named in the question.
+    "skip multiplayer" -> exclude {multiplayer}; "only DLC" -> include {dlc}."""
+    q = (question or "").lower()
+    exclude, include = set(), set()
+    for cat, pattern in _CATEGORY_WORDS.items():
+        for m in re.finditer(pattern, q):
+            before = q[max(0, m.start() - 28):m.start()]
+            if re.search(rf"\b({_ONLY_WORDS})\b[^.]*$", before):
+                include.add(cat)
+            elif re.search(rf"\b({_NEGATE_WORDS})\b[^.]*$", before):
+                exclude.add(cat)
+    return exclude - include, include
+
+
+def _category_of(a: dict) -> Optional[str]:
+    """An item's category: its phase tag, else a keyword read of name+description
+    (used for items beyond the tagged window)."""
+    cat = a.get("category")
+    if cat:
+        return cat
+    text = f"{a.get('name', '')} {a.get('description', '')}"
+    for key, pattern in _CATEGORY_TEXT.items():
+        if pattern.search(text):
+            return key
+    return None
+
+
+def _filter_by_category(items: list, exclude: set[str], include: set[str]) -> list:
+    """Drop (or keep only) items by category. Never returns an empty list — an
+    over-eager filter falls back to the full list, same rule as the model path."""
+    out = [
+        a for a in items
+        if (_category_of(a) not in exclude)
+        and (not include or _category_of(a) in include)
+    ]
+    return out or items
+
+
+# Words that can introduce an exclusion/refinement ("skip multiplayer", "no DLC",
+# "without grinding", "only the easy ones", "exclude online").
+_EXCLUSION_RE = re.compile(r"\b(skip|no|not|without|exclude|excluding|ignore|avoid|only|just|"
+                           r"except|drop|omit|minus)\b", re.IGNORECASE)
+
+
 def _apply_unowned_filter(question: str, achievements: list[dict]) -> list[dict]:
     """Apply a SEMANTIC exclusion filter (e.g. "skip multiplayer", "no DLC") to a
     fetched unowned-game achievement list via one Flash call — this gives unowned
@@ -873,13 +977,22 @@ def _apply_unowned_filter(question: str, achievements: list[dict]) -> list[dict]
     parse, or an attempt to drop everything falls back to the full list."""
     if not achievements:
         return achievements
+    # No exclusion asked → no call. This Flash round-trip fired on every roadmap
+    # (~1s + tokens) just to answer "nothing to filter" (22.5 / 23.6e).
+    if not _EXCLUSION_RE.search(question or ""):
+        return achievements
     listing = "\n".join(
         f"{i}. {a['name']}" + (f" — {a.get('description', '')}" if a.get("description") else "")
         for i, a in enumerate(achievements, 1)
     )
     try:
+        # thinking OFF + an explicit cap: this is mechanical list filtering, and
+        # WITH reasoning a 60-item list exhausted even the 4096 default — the call
+        # returned EMPTY, so "skip multiplayer" silently did nothing (same failure
+        # class as the phase tagging in 23.2a).
         resp = call_llm(f"Request: {question}\n\nAchievements:\n{listing}",
-                        model=DEEPSEEK_MODEL_FLASH, system=_ROADMAP_FILTER_SYSTEM).strip()
+                        model=DEEPSEEK_MODEL_FLASH, system=_ROADMAP_FILTER_SYSTEM,
+                        max_tokens=1024, thinking=False).strip()
     except Exception:
         return achievements
     if not resp or resp.upper() == "NONE":
@@ -895,6 +1008,8 @@ def _apply_unowned_filter(question: str, achievements: list[dict]) -> list[dict]
 # The achievement LIST stays grounded (sandbox); these CATEGORY/missable tags are
 # an LLM interpretation, so the UI labels the result a "suggested plan".
 _ROADMAP_PHASE_MAX = 60
+# The code-gen contract caps `remaining` at 60; the deterministic engine matches it.
+_ROADMAP_MAX_ITEMS = 60
 _PHASE_CATEGORIES = ["story", "collectible", "combat", "skill", "grind", "multiplayer", "dlc", "misc"]
 _PHASE_DEFS = [
     ("story", "📖 Story & progression"),
@@ -922,18 +1037,38 @@ Append " missable" ONLY if the text strongly implies it can be permanently misse
 Use ONLY the name + description. Output ONLY the lines."""
 
 
-def _tag_phases(remaining: list, target: str) -> list:
+def _tag_phases(remaining: list, target: str, cache_key: Optional[str] = None) -> list:
     """Group the (grounded) remaining achievements into an ordered, phase-based plan
     via one Flash classification pass. Missables get a synthetic first phase (timing
     matters most); the rest fall into category phases in a sensible completion order.
     Best-effort — any failure leaves a single 'Everything else' phase."""
     items = remaining[:_ROADMAP_PHASE_MAX]
+
+    # Tags are a property of the GAME's achievements, not of this player's locked
+    # set — so they're cached per game and shared by every user (23.6b). Only the
+    # achievements we haven't tagged before are sent to the model; a game whose
+    # tags are fully cached skips the call entirely.
+    known: dict[str, list] = (cache_get(cache_key) or {}) if cache_key else {}
+    todo = [a for a in items if a.get("name") not in known]
+
+    tags: dict[int, tuple[str, bool]] = {}
+    for i, a in enumerate(items):
+        hit = known.get(a.get("name", ""))
+        if hit:
+            tags[i] = (hit[0], bool(hit[1]))
+
+    if not todo:
+        for i, a in enumerate(items):
+            cat, missable = tags.get(i, ("misc", False))
+            a["category"], a["missable"] = cat, missable
+        return _phases_from(items)
+
     listing = "\n".join(
         f"{i}. {a.get('name', '')}" +
         (f" — {a.get('description', '').strip()}" if a.get("description") and not a.get("hidden") else "")
-        for i, a in enumerate(items, 1)
+        for i, a in enumerate(todo, 1)
     )
-    tags: dict[int, tuple[str, bool]] = {}
+    fresh: dict[str, list] = {}
     try:
         # thinking OFF: this is bulk tagging — with reasoning it burned ~15k tokens /
         # ~60s and routinely hit the cap (→ silently no phases); without: ~1.5s.
@@ -944,10 +1079,22 @@ def _tag_phases(remaining: list, target: str) -> list:
             m = re.match(r"\s*(\d+)\s*[:.\)]\s*([a-zA-Z]+)(\s+missable)?", line.strip())
             if not m:
                 continue
+            idx = int(m.group(1)) - 1
+            if not 0 <= idx < len(todo):
+                continue
             cat = m.group(2).lower()
-            tags[int(m.group(1)) - 1] = (cat if cat in _PHASE_CATEGORIES else "misc", bool(m.group(3)))
+            cat = cat if cat in _PHASE_CATEGORIES else "misc"
+            fresh[todo[idx].get("name", "")] = [cat, bool(m.group(3))]
     except Exception as exc:
         print(f"[roadmap] phase tagging failed: {exc}")
+
+    if fresh and cache_key:
+        cache_put(cache_key, {**known, **fresh})
+
+    for i, a in enumerate(items):
+        hit = fresh.get(a.get("name", ""))
+        if hit:
+            tags[i] = (hit[0], bool(hit[1]))
     if len(tags) < len(items):
         print(f"[roadmap] phase tagging covered {len(tags)}/{len(items)} items — rest → misc")
 
@@ -955,6 +1102,11 @@ def _tag_phases(remaining: list, target: str) -> list:
         cat, missable = tags.get(i, ("misc", False))
         a["category"], a["missable"] = cat, missable
 
+    return _phases_from(items)
+
+
+def _phases_from(items: list) -> list:
+    """Group already-tagged achievements into the ordered phase list."""
     phases = []
     missables = [a for a in items if a.get("missable")]
     if missables:
@@ -965,6 +1117,44 @@ def _tag_phases(remaining: list, target: str) -> list:
         if grp:
             phases.append({"key": key, "title": title, "achievements": grp})
     return phases
+
+
+def _owned_roadmap_data(appid: int, name: str, frames: dict[str, pd.DataFrame]) -> dict:
+    """Build the roadmap dataset for an OWNED game with pure pandas (23.6a).
+
+    This is exactly what _ROADMAP_CODE_SYSTEM asks the model to write, minus the
+    Pro call, the sandbox spawn and the JSON-parse failure mode: locked = every
+    achievement with no player_unlocks row where achieved is True; easiest first
+    by global rarity (unknown rarity last); capped like the code-gen contract.
+    Returns the SAME shape the code-gen path returns, so everything downstream
+    (phase tagging, the structured payload, the UI) is unchanged."""
+    ach = frames["achievements"]
+    ach = ach[ach["appid"] == appid]
+    pu = frames["player_unlocks"]
+    unlocked_names = set(
+        pu[(pu["appid"] == appid) & (pu["achieved"] == True)]["api_name"]   # noqa: E712
+    )
+    locked = ach[~ach["api_name"].isin(unlocked_names)]
+    # Easiest first = highest share of players who have it; unknown rarity last.
+    # NB: not "_r" — itertuples renames leading-underscore columns positionally.
+    locked = locked.assign(rarity_num=pd.to_numeric(locked["rarity_pct"], errors="coerce"))
+    locked = locked.sort_values("rarity_num", ascending=False, na_position="last")
+
+    remaining = [
+        {
+            "name": str(r.display_name or r.api_name),
+            "rarity_pct": (None if pd.isna(r.rarity_num) else float(r.rarity_num)),
+            "description": str(r.description or ""),
+            "hidden": bool(r.hidden),
+        }
+        for r in locked.head(_ROADMAP_MAX_ITEMS).itertuples()
+    ]
+    return {
+        "target": name,
+        "total": int(len(ach)),
+        "unlocked": int(len(ach) - len(locked)),
+        "remaining": remaining,
+    }
 
 
 def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentState:
@@ -994,6 +1184,8 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
 
     code = ""
     unowned = False
+    method = "codegen"   # how the dataset was produced — surfaced in the trace
+    phase_key = None     # per-GAME cache key for phase tags (shared across users)
     if unowned_target:
         fetched = _unowned_roadmap_data(unowned_target)
         if not fetched:
@@ -1005,10 +1197,20 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
                 "done": True,
             }
         unowned = True
+        method = "live_fetch"   # schema + rarity fetched from Steam, not computed
         target, total, unlocked = fetched["target"], fetched["total"], 0
-        # Honor semantic refine filters ("skip multiplayer", "no DLC") on unowned
-        # games too — the sandbox path gets this from code-gen; here it's a Flash pass.
-        remaining = _apply_unowned_filter(q, fetched["remaining"])
+        remaining = fetched["remaining"]
+    elif owned_hit and ROADMAP_ENGINE != "codegen":
+        # Deterministic engine (default): the game is already resolved, so the
+        # dataset is pure pandas — no Pro call, no sandbox spawn, no parse
+        # failure. Refine filters ("skip multiplayer", "no DLC") reuse the same
+        # Flash pass the unowned path uses, so both engines refine alike.
+        name, appid = owned_hit
+        phase_key = f"phasetags:{appid}"
+        data = _owned_roadmap_data(appid, name, frames)
+        target, total, unlocked = data["target"], data["total"], data["unlocked"]
+        remaining = data["remaining"]
+        method = "deterministic"
     else:
         prompt = (
             f"Schema:\n{state['schema']}\n\n"
@@ -1037,6 +1239,29 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
         unlocked = data.get("unlocked", 0)
         remaining = data.get("remaining") or []
 
+    # Tag → filter → re-group (23.6 follow-up). Tagging is cached per game, so
+    # doing it BEFORE the filter costs nothing extra and lets a category
+    # exclusion ("skip multiplayer") be resolved from the same tags the phase
+    # view shows. Only an exclusion with no matching category still pays a model
+    # call. Previously the filter judged independently and the two disagreed.
+    phases = []
+    if remaining:
+        phases = _tag_phases(remaining, target,
+                             phase_key or f"phasetags:{str(target).strip().lower()}")
+        exclude, include = _requested_categories(q)
+        if exclude or include:
+            before = len(remaining)
+            remaining = _filter_by_category(remaining, exclude, include)
+            if len(remaining) != before:
+                phases = _phases_from([a for a in remaining if a.get("category")])
+        elif _EXCLUSION_RE.search(q or ""):
+            # An exclusion we can't map to a category (e.g. "nothing with
+            # stealth") — the model still judges that one.
+            before = len(remaining)
+            remaining = _apply_unowned_filter(q, remaining)
+            if len(remaining) != before:
+                phases = _phases_from([a for a in remaining if a.get("category")])
+
     if not remaining:
         if total == 0:
             # Not owned AND not findable on Steam (or it has no achievements).
@@ -1060,7 +1285,7 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
                 f"({unlocked}/{total} unlocked). Try widening it — e.g. drop the filter or "
                 "include moderate-difficulty ones."
             )
-        return {"answer": answer, "code_history": [code], "done": True}
+        return {"answer": answer, "method": method, "code_history": [code], "done": True}
 
     # Tier the remaining achievements by global rarity.
     quick, moderate, challenge = [], [], []
@@ -1081,7 +1306,10 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
     )[:_ROADMAP_MAX_HOWTO]
 
     def _one_link(a):
-        hits = web_search(f"{a['name']} {target} how to unlock", max_results=1)
+        # Cached per (game, achievement): the same hardest achievements are looked
+        # up for every user who builds this roadmap (23.6b).
+        key = f"howto:{str(target).strip().lower()}:{a['name'].strip().lower()}"
+        hits = cached_search(key, f"{a['name']} {target} how to unlock", max_results=1)
         return (a["name"], hits[0]["url"]) if hits else None
 
     howto_links = []
@@ -1145,10 +1373,11 @@ def roadmap_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> AgentSta
         },
         "tier_counts": {"quick": len(quick), "moderate": len(moderate), "challenge": len(challenge)},
         "howto": [{"name": n, "url": u} for n, u in howto_links],
-        # Suggested phase plan (LLM-tagged on top of the grounded list).
-        "phases": _tag_phases(remaining, target),
+        # Suggested phase plan (LLM-tagged on top of the grounded list), already
+        # computed above so a category filter can reuse the same tags.
+        "phases": phases,
     }
-    return {"answer": "\n".join(parts), "roadmap": roadmap_data,
+    return {"answer": "\n".join(parts), "roadmap": roadmap_data, "method": method,
             "code_history": [code] if code else [], "done": True}
 
 

@@ -89,6 +89,15 @@ UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/"
 UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
 USE_REDIS = bool(UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)
 
+# Which engine builds a roadmap for an OWNED, explicitly-named game (23.6a):
+#   "deterministic" — pure pandas over the snapshot (default: ~1s, cannot fail
+#                     into a code-gen error, cannot hallucinate an achievement)
+#   "codegen"       — the original path: a Pro call writes pandas, the sandbox
+#                     runs it. Kept live so the code-writing agent can still be
+#                     demoed, and so eval/roadmap_check.py can A/B the two.
+# Library-wide ("roadmap for my library") always uses code-gen — it's open-ended.
+ROADMAP_ENGINE = os.environ.get("ROADMAP_ENGINE", "deterministic").strip().lower()
+
 # Per-IP rate limits (requests per window). All env-overridable.
 RATE_LIMIT_ASK_PER_MIN = int(os.environ.get("RATE_LIMIT_ASK_PER_MIN", "15"))
 RATE_LIMIT_ASK_PER_DAY = int(os.environ.get("RATE_LIMIT_ASK_PER_DAY", "150"))

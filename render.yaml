@@ -47,6 +47,7 @@ services:
       #   EXEC_MEMORY_MB=2048            LLM_MAX_TOKENS=4096
       #   DEEPSEEK_BASE_URL=https://api.deepseek.com
       #   DEEPSEEK_MODEL_PRO=deepseek-v4-pro   DEEPSEEK_MODEL_FLASH=deepseek-v4-flash
+      #   ROADMAP_ENGINE=deterministic   (set "codegen" to demo the code-writing path)
       #   RATE_LIMIT_ASK_PER_MIN=15      RATE_LIMIT_ASK_PER_DAY=150   RATE_LIMIT_SESSION_PER_MIN=10
       #   RATE_LIMIT_CHART_PER_MIN=10    RATE_LIMIT_CHART_PER_DAY=100
       #   RATE_LIMIT_READ_PER_MIN=30     RATE_LIMIT_STATUS_PER_MIN=90
