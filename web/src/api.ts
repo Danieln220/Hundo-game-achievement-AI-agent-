@@ -77,6 +77,14 @@ export const session = (profile: string) =>
 export const sessionStatus = (steamId: string) =>
   get<SessionStatus>(`/session/status?steam_id=${encodeURIComponent(steamId)}`);
 
+// Force a rebuild of an existing snapshot (23.3b). The current snapshot keeps
+// serving while the new one builds, so the UI never goes empty.
+export const refreshSession = (steamId: string) =>
+  post<{ status: "refreshing" | "already_building"; steam_id: string }>(
+    "/session/refresh",
+    { steam_id: steamId },
+  );
+
 // "Sign in through Steam" (OpenID) — top-level navigation to the backend, which
 // redirects to Steam and bounces back to the app with ?steam_id=.
 export const steamLoginUrl = () => `${BASE}/auth/steam/login`;

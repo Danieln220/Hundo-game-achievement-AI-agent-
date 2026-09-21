@@ -2,13 +2,16 @@
 in-memory fallback (single-process dev). Backend chosen by config at import time.
 requests-only — no new dependency.
 
-Fail-open by design: if Upstash is unreachable, counters return 0 (under limit)
-and locks grant — we'd rather risk a duplicate build / an unthrottled request
-than lock every user out because the cache hiccuped. Only api/ + data_layer/ use
-this; the agent never does.
+Locks FAIL OPEN: if Upstash is unreachable they grant — better a rare duplicate
+build than a deadlocked request. Rate-limit counters FAIL CLOSED to the
+per-instance in-memory window instead (23.2b): returning "under limit" on a cache
+outage left LLM spend completely unguarded (2026-09-15 incident). Only api/ +
+data_layer/ use this; the agent never does.
 """
 import threading
 import time
+import uuid
+from typing import Optional
 
 import requests
 
@@ -173,28 +176,64 @@ def get(key: str) -> str | None:
         return entry[0] if _mem_alive(entry) else None
 
 
-def acquire_lock(key: str, ttl_seconds: int) -> bool:
-    """Best-effort distributed lock via SET NX EX. Returns True if acquired.
+def acquire_lock(key: str, ttl_seconds: int) -> Optional[str]:
+    """Best-effort distributed lock via SET NX EX. Returns the OWNER TOKEN when
+    acquired, else None. The token makes the lock owned (23.3c): heartbeat and
+    release only affect a lock this caller still holds, so a stalled build can no
+    longer extend or delete the lock of the build that replaced it.
     Fail-open: grants the lock if Redis errored (better a rare double-build than a
     deadlocked request)."""
+    token = uuid.uuid4().hex
     if using_redis():
         try:
-            return _command("SET", key, "1", "NX", "EX", ttl_seconds) == "OK"
+            return token if _command("SET", key, token, "NX", "EX", ttl_seconds) == "OK" else None
         except Exception:
-            return True
+            return token
     with _mem_lock:
         if _mem_alive(_mem.get(key)):
+            return None
+        _mem[key] = [token, time.time() + ttl_seconds]
+        return token
+
+
+def refresh_lock(key: str, ttl_seconds: int, token: Optional[str] = None) -> bool:
+    """Heartbeat: extend the TTL only while `token` still owns the lock. Returns
+    False when the lock was lost (expired, or taken over by another build) — the
+    caller should stop, since another build now owns this snapshot.
+    `token=None` keeps the old unconditional behaviour for non-owned locks."""
+    if token is None:
+        set(key, "1", ttl_seconds)
+        return True
+    if using_redis():
+        try:
+            # XX = only if it already exists; combined with the value check below
+            # this is a compare-and-extend (no Lua needed on the REST API).
+            if _command("GET", key) != token:
+                return False
+            return _command("SET", key, token, "XX", "EX", ttl_seconds) == "OK"
+        except Exception:
+            return True   # fail-open: a cache blip shouldn't kill a live build
+    with _mem_lock:
+        entry = _mem.get(key)
+        if not _mem_alive(entry) or entry[0] != token:
             return False
-        _mem[key] = ["1", time.time() + ttl_seconds]
+        entry[1] = time.time() + ttl_seconds
         return True
 
 
-def refresh_lock(key: str, ttl_seconds: int) -> None:
-    """Extend a held lock's TTL (heartbeat). Plain SET EX overwrites the existing
-    value + resets expiry — used so a live build keeps its lock fresh while a dead
-    build's lock is allowed to expire (Step 15.6)."""
-    set(key, "1", ttl_seconds)
-
-
-def release_lock(key: str) -> None:
-    delete(key)
+def release_lock(key: str, token: Optional[str] = None) -> None:
+    """Release the lock — only if `token` still owns it (compare-and-delete)."""
+    if token is None:
+        delete(key)
+        return
+    if using_redis():
+        try:
+            if _command("GET", key) == token:
+                delete(key)
+        except Exception:
+            pass
+        return
+    with _mem_lock:
+        entry = _mem.get(key)
+        if entry is not None and entry[0] == token:
+            _mem.pop(key, None)

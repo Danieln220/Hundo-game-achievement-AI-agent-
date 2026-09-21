@@ -42,6 +42,7 @@ from data_layer.resolver import resolve_steam_id, SteamResolveError
 from data_layer.snapshot import (
     ensure_snapshot, has_snapshot, load_frames, clear_snapshot, PrivateProfileError,
     snapshot_version, is_private_owned_payload, PRIVATE_PROFILE_MSG,
+    snapshot_age_days, snapshot_meta, DEFAULT_MAX_AGE_DAYS,
 )
 
 import threading
@@ -132,6 +133,8 @@ _RATE_RULES = {
     "/ask": ("ask", _ASK_WINDOWS),
     "/ask/stream": ("ask", _ASK_WINDOWS),
     "/session": ("session", [("min", 60, RATE_LIMIT_SESSION_PER_MIN)]),
+    # A refresh is a full library re-fetch — stricter than /session on purpose.
+    "/session/refresh": ("refresh", [("min", 60, 2), ("day", 86400, 20)]),
     "/session/status": ("status", [("min", 60, RATE_LIMIT_STATUS_PER_MIN)]),
     "/chart": ("chart", [("min", 60, RATE_LIMIT_CHART_PER_MIN),
                          ("day", 86400, RATE_LIMIT_CHART_PER_DAY)]),
@@ -305,6 +308,10 @@ def _check_question(req: AskReq) -> None:
 _MAX_CHART_RESULT_BYTES = 64_000   # a real /ask echo is a few KB
 
 
+class RefreshReq(BaseModel):
+    steam_id: str
+
+
 class ChartReq(BaseModel):
     result: dict                       # a prior /ask response (echoed back)
 
@@ -396,15 +403,32 @@ def _session_summary(steam_id: str) -> dict:
         summary = steam_client.get_player_summary(steam_id)
     except Exception:
         pass
+    age = snapshot_age_days(steam_id)
     return {
         "steam_id": steam_id,
         "persona": summary.get("personaname", ""),
         "avatar": summary.get("avatarfull", ""),
+        # Freshness (23.3b) so the UI can show "updated N ago" + a refresh button.
+        "built_at": snapshot_meta(steam_id).get("built_at"),
+        "age_days": round(age, 3) if age is not None else None,
+        "stale": bool(age is not None and age > DEFAULT_MAX_AGE_DAYS),
         **stats,
     }
 
 
-def _run_build(steam_id: str, owned: Optional[dict] = None) -> None:
+def _refresh_in_background(steam_id: str) -> bool:
+    """Kick off a rebuild for a user who already HAS a snapshot (23.3b). The old
+    snapshot keeps serving until the new one lands (stale-while-revalidate), so
+    nothing blocks and a Steam outage can't take a working profile away. Returns
+    False when a build is already running for this user."""
+    if cache.get(_status_key(steam_id)) == "building":
+        return False
+    cache.set(_status_key(steam_id), "building", _STATUS_TTL)
+    _BUILD_POOL.submit(_run_build, steam_id, None, True)
+    return True
+
+
+def _run_build(steam_id: str, owned: Optional[dict] = None, force: bool = False) -> None:
     """Background worker: build the snapshot, writing progress to the cache. The
     build-lock inside ensure_snapshot dedupes concurrent builds for the same user.
     Status is mirrored to the DB row (building → ready/failed) so it is visible
@@ -416,7 +440,10 @@ def _run_build(steam_id: str, owned: Optional[dict] = None) -> None:
         cache.set(_progress_key(steam_id), f"{done}/{total}", _STATUS_TTL)
 
     try:
-        ensure_snapshot(steam_id, progress_cb=cb, owned=owned)
+        # max_age_days was dead config until 23.3b — a snapshot older than
+        # DEFAULT_MAX_AGE_DAYS is now rebuilt instead of being cached forever.
+        ensure_snapshot(steam_id, max_age_days=DEFAULT_MAX_AGE_DAYS,
+                        progress_cb=cb, owned=owned, force=force)
         cache.set(_status_key(steam_id), "ready", _STATUS_TTL)
         _record_snapshot_meta(steam_id)
     except PrivateProfileError as e:
@@ -478,6 +505,9 @@ def session(req: SessionReq):
         cache.set(_status_key(steam_id), "ready", _STATUS_TTL)
         summ = _session_summary(steam_id)
         db.upsert_user(steam_id, req.profile, summ["persona"], summ["avatar"])
+        # Stale snapshot → serve it NOW and refresh behind the scenes (23.3b).
+        if summ.get("stale"):
+            summ["refreshing"] = _refresh_in_background(steam_id)
         return {"status": "ready", **summ}
 
     # Not built yet → record identity, then check privacy UP-FRONT with one Steam
@@ -502,6 +532,17 @@ def session(req: SessionReq):
     cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
     _BUILD_POOL.submit(_run_build, steam_id, owned)
     return {"status": "building", "steam_id": steam_id}
+
+
+@app.post("/session/refresh")
+def session_refresh(req: "RefreshReq"):
+    """Force a rebuild of an existing snapshot (23.3b). The current snapshot keeps
+    serving while the new one builds, so this never leaves the user with nothing."""
+    steam_id = _sid(req.steam_id)
+    if not has_snapshot(steam_id):
+        raise HTTPException(status_code=404, detail="No snapshot yet — load the profile first.")
+    started = _refresh_in_background(steam_id)
+    return {"status": "refreshing" if started else "already_building", "steam_id": steam_id}
 
 
 @app.get("/library")

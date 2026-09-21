@@ -34,7 +34,14 @@ _FETCH_WORKERS = 16
 # owned_games.json is LAST — it's the readiness marker (has_snapshot checks it),
 # so it must be written/uploaded only after the per-game files exist (no
 # half-built snapshot ever looks "ready" to a concurrent reader).
-_SNAP_FILES = ("schemas.json", "achievements.json", "global_pct.json", "owned_games.json")
+_SNAP_FILES = ("schemas.json", "achievements.json", "global_pct.json", "meta.json",
+               "owned_games.json")
+
+# A build that lost more than this share of its per-game calls (after a retry
+# pass) is INCOMPLETE — we fail it instead of freezing the gaps into a snapshot
+# that then looks "ready" for SNAPSHOT_TTL_DAYS (23.3a). Below the threshold the
+# few failures are recorded in meta.json and re-fetched on the next build.
+_MAX_FAILED_SHARE = 0.10
 
 
 def _snap_key(steam_id: str, fname: str) -> str:
@@ -138,6 +145,19 @@ def snapshot_version(steam_id: str = STEAM_ID) -> str | None:
         return None
 
 
+def snapshot_meta(steam_id: str = STEAM_ID) -> dict:
+    """Build provenance for this user's snapshot (23.3a/b): {built_at, games,
+    calls, failed}. Empty for snapshots built before meta.json existed — callers
+    fall back to snapshot_age_days()."""
+    p = _resolve_snapshot_dir(steam_id) / "meta.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return {}
+
+
 def snapshot_age_days(steam_id: str = STEAM_ID) -> float | None:
     """Age of this user's snapshot in days, or None if there is none."""
     marker = _resolve_snapshot_dir(steam_id) / "owned_games.json"
@@ -170,19 +190,30 @@ def clear_snapshot(steam_id: str = STEAM_ID) -> bool:
     return removed
 
 
-def _fetch_one(kind: str, steam_id: str, appid: int) -> tuple[str, int, dict]:
+class LockLostError(RuntimeError):
+    """This build's lock was taken over by another build — stop and let it win."""
+
+
+class SnapshotIncompleteError(RuntimeError):
+    """Too many per-game Steam calls failed — the snapshot would have silent gaps."""
+
+
+def _fetch_one(kind: str, steam_id: str, appid: int) -> tuple[str, int, dict, bool]:
     """Fetch a single endpoint for one game. Tagged by `kind` so results can be
-    regrouped after running through the thread pool. Failures degrade to {}."""
+    regrouped after running through the thread pool. The 4th element is `ok`:
+    False means the CALL FAILED (vs. a legitimately empty payload, e.g. a game
+    with no achievements) — the caller counts those instead of silently keeping
+    the gap (23.3a)."""
     try:
         if kind == "schema":
-            return kind, appid, steam_client.get_schema_for_game(appid)
+            return kind, appid, steam_client.get_schema_for_game(appid), True
         if kind == "ach":
-            return kind, appid, steam_client.get_player_achievements(steam_id, appid)
+            return kind, appid, steam_client.get_player_achievements(steam_id, appid), True
         if kind == "pct":
-            return kind, appid, steam_client.get_global_achievement_pct(appid)
-    except Exception:
-        pass
-    return kind, appid, {}
+            return kind, appid, steam_client.get_global_achievement_pct(appid), True
+    except Exception as exc:
+        print(f"  [fetch] {kind} {appid} failed: {type(exc).__name__}: {str(exc)[:120]}")
+    return kind, appid, {}, False
 
 
 def build_snapshot(steam_id: str = STEAM_ID, progress_cb=None, owned: dict | None = None) -> None:
@@ -220,20 +251,56 @@ def build_snapshot(steam_id: str = STEAM_ID, progress_cb=None, owned: dict | Non
     total = len(work)
     done = 0
 
+    failed: list[tuple[str, int]] = []
     with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
         futures = [pool.submit(_fetch_one, kind, steam_id, a) for kind, a in work]
         for fut in as_completed(futures):
-            kind, appid, data = fut.result()
+            kind, appid, data, ok = fut.result()
             buckets[kind][appid] = data
+            if not ok:
+                failed.append((kind, appid))
             done += 1
             if progress_cb:
                 progress_cb(done, total)
             if done % 30 == 0 or done == total:
                 print(f"  {done}/{total} calls done")
 
+    # One retry pass over the failures (Steam 429s/5xx cluster in bursts; the
+    # session already backed off, so a second try minutes later usually lands).
+    if failed:
+        print(f"  retrying {len(failed)} failed calls...")
+        retry_work, failed = failed, []
+        with ThreadPoolExecutor(max_workers=max(2, _FETCH_WORKERS // 4)) as pool:
+            for kind, appid, data, ok in pool.map(
+                    lambda ka: _fetch_one(ka[0], steam_id, ka[1]), retry_work):
+                if ok:
+                    buckets[kind][appid] = data
+                else:
+                    failed.append((kind, appid))
+                if progress_cb:
+                    progress_cb(done, total)   # heartbeat the build lock
+
+    # Fail LOUDLY rather than store a snapshot with silent holes: a user whose
+    # build half-failed would otherwise see wrong totals for SNAPSHOT_TTL_DAYS.
+    if total and len(failed) / total > _MAX_FAILED_SHARE:
+        raise SnapshotIncompleteError(
+            f"{len(failed)} of {total} Steam calls failed ({len(failed) / total:.0%}) — "
+            "Steam may be rate-limiting or down. Please try again in a few minutes."
+        )
+    if failed:
+        print(f"  {len(failed)} calls still failing — recorded for the next build")
+
     (out / "schemas.json").write_text(json.dumps(schemas, indent=2))
     (out / "achievements.json").write_text(json.dumps(achievements, indent=2))
     (out / "global_pct.json").write_text(json.dumps(global_pct, indent=2))
+    # Build provenance: which calls are still missing (re-fetched next build) and
+    # how complete this snapshot is. Read by meta() / the /session "last updated".
+    (out / "meta.json").write_text(json.dumps({
+        "built_at": time.time(),
+        "games": len(games),
+        "calls": total,
+        "failed": [[k, a] for k, a in failed],
+    }, indent=2))
     # owned_games.json is written LAST and is the readiness marker (has_snapshot
     # checks it). Writing it only after the per-game files exist prevents a
     # concurrent reader (e.g. /session/status polling) from seeing a half-built
@@ -244,7 +311,7 @@ def build_snapshot(steam_id: str = STEAM_ID, progress_cb=None, owned: dict | Non
         _upload_snapshot(steam_id)
         print(f"Snapshot mirrored to object storage ({storage._SB_BUCKETS['snapshots']}/{steam_id}/)")
 
-    print(f"Snapshot complete — {len(games)} games, 4 files in {out}/")
+    print(f"Snapshot complete — {len(games)} games, {len(_SNAP_FILES)} files in {out}/")
 
 
 def _build_with_lock(steam_id: str, progress_cb=None, owned: dict | None = None) -> None:
@@ -254,21 +321,33 @@ def _build_with_lock(steam_id: str, progress_cb=None, owned: dict | None = None)
     ourselves if that build vanished (lock expired / failed)."""
     lock_key = f"lock:snap:{steam_id}"
 
-    def _build_holding_lock() -> None:
+    def _build_holding_lock(token: str) -> None:
         # Heartbeat the (short-TTL) lock on every progress tick so a LIVE build
         # keeps it, but a build that dies mid-flight lets it expire within
         # SNAPSHOT_LOCK_TTL — so a waiter/new request can take over quickly.
+        # The heartbeat is OWNED (23.3c): if this build lost the lock (it stalled
+        # past the TTL and another build took over) we stop instead of racing it
+        # — two builds writing the same files is how half-built snapshots happen.
+        lost = False
+
         def hb(done: int, total: int) -> None:
-            cache.refresh_lock(lock_key, SNAPSHOT_LOCK_TTL)
+            nonlocal lost
+            if not lost and not cache.refresh_lock(lock_key, SNAPSHOT_LOCK_TTL, token):
+                lost = True
+                raise LockLostError(
+                    "Another build took over this snapshot (this one stalled past "
+                    f"{SNAPSHOT_LOCK_TTL}s)."
+                )
             if progress_cb:
                 progress_cb(done, total)
         try:
             build_snapshot(steam_id, progress_cb=hb, owned=owned)
         finally:
-            cache.release_lock(lock_key)
+            cache.release_lock(lock_key, token)   # only if we still own it
 
-    if cache.acquire_lock(lock_key, ttl_seconds=SNAPSHOT_LOCK_TTL):
-        _build_holding_lock()
+    token = cache.acquire_lock(lock_key, ttl_seconds=SNAPSHOT_LOCK_TTL)
+    if token:
+        _build_holding_lock(token)
         return
 
     # Someone else is building — wait until their (heartbeated) lock clears, then
@@ -278,8 +357,10 @@ def _build_with_lock(steam_id: str, progress_cb=None, owned: dict | None = None)
     while waited < SNAPSHOT_WAIT_MAX and cache.exists(lock_key):
         time.sleep(2)
         waited += 2
-    if not has_snapshot(steam_id) and cache.acquire_lock(lock_key, ttl_seconds=SNAPSHOT_LOCK_TTL):
-        _build_holding_lock()
+    if not has_snapshot(steam_id):
+        token = cache.acquire_lock(lock_key, ttl_seconds=SNAPSHOT_LOCK_TTL)
+        if token:
+            _build_holding_lock(token)
 
 
 def ensure_snapshot(
@@ -287,12 +368,14 @@ def ensure_snapshot(
     max_age_days: float | None = None,
     progress_cb=None,
     owned: dict | None = None,
+    force: bool = False,
 ) -> None:
     """Build the snapshot if this user has none, or if `max_age_days` is given and
     the existing one is older than that. Otherwise reuse the cached snapshot.
     Builds run under a lock (see _build_with_lock) to avoid duplicate fetches.
-    `owned` = a pre-fetched GetOwnedGames payload to reuse (see build_snapshot)."""
-    need_build = not has_snapshot(steam_id)
+    `owned` = a pre-fetched GetOwnedGames payload to reuse (see build_snapshot).
+    `force` rebuilds even a fresh snapshot (the /session/refresh path)."""
+    need_build = force or not has_snapshot(steam_id)
     if not need_build and max_age_days is not None:
         age = snapshot_age_days(steam_id)
         if age is not None and age > max_age_days:

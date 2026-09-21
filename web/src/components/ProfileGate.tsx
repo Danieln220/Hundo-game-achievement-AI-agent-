@@ -3,6 +3,13 @@ import { health, isWaking, session, sessionStatus, steamLoginUrl } from "../api"
 import type { SessionResult } from "../types";
 
 const POLL_MS = 1500; // how often to poll /session/status while a snapshot builds
+// Deadlines for a build that never finishes (23.3c): a killed worker used to
+// leave the bar spinning forever. Give up after 15 min overall, or 3 min with
+// the progress counter frozen — the build-lock TTL means a retry can take over.
+const POLL_MAX_MS = 15 * 60 * 1000;
+const POLL_STALL_MS = 3 * 60 * 1000;
+const STUCK_MSG =
+  "The profile build stopped making progress — it may have been interrupted. Please try again.";
 
 // Retry schedule for a cold-starting server (Render free tier naps when idle and
 // takes 30–90s to boot; its edge answers 502 meanwhile — the browser shows that
@@ -111,8 +118,17 @@ export default function ProfileGate({
       // A transient poll failure (network blip, server cold start) must NOT kill
       // the flow — the build keeps running server-side. Give up only after 4 in a row.
       let misses = 0;
+      const startedAt = Date.now();
+      let lastDone = -1;
+      let lastMovedAt = Date.now();
       for (;;) {
         if (cancelled.current) return;
+        if (Date.now() - startedAt > POLL_MAX_MS || Date.now() - lastMovedAt > POLL_STALL_MS) {
+          setError(STUCK_MSG);
+          setLoading(false);
+          setProgress(null);
+          return;
+        }
         await sleep(POLL_MS);
         let st;
         try {
@@ -132,6 +148,10 @@ export default function ProfileGate({
           setLoading(false);
           setProgress(null);
           return;
+        }
+        if (st.progress.done !== lastDone) {
+          lastDone = st.progress.done;
+          lastMovedAt = Date.now();
         }
         setProgress(st.progress);
       }

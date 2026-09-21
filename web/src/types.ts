@@ -87,6 +87,12 @@ export interface SessionResult {
   unlocked: number;
   total: number;
   perfect: number;
+  // Snapshot freshness (23.3b). built_at is a unix timestamp (seconds); older
+  // snapshots (built before meta.json) report null and just hide the label.
+  built_at?: number | null;
+  age_days?: number | null;
+  stale?: boolean;
+  refreshing?: boolean;   // a background rebuild was kicked off by /session
 }
 
 // /session returns either a ready summary or a "building" handle to poll.

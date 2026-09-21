@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getLibrary, getPopular } from "../api";
+import { getLibrary, getPopular, refreshSession } from "../api";
 import type { Card, LibGame, LibraryData, SessionResult } from "../types";
 import { C, tierOf, tierColor, pctLabel, HOLO, STEAM_HEADER, onImgError } from "../tcTheme";
 import AchievementCard from "./AchievementCard";
@@ -32,7 +32,38 @@ function chipBtn(active: boolean, color: string): React.CSSProperties {
   };
 }
 
+// "updated 3h ago" from the snapshot's build time (23.3b). Snapshots built
+// before meta.json existed have no built_at — the label is then hidden.
+function agoLabel(builtAt?: number | null): string | null {
+  if (!builtAt) return null;
+  const mins = Math.max(0, (Date.now() - builtAt * 1000) / 60000);
+  if (mins < 2) return "just now";
+  if (mins < 60) return `${Math.round(mins)}m ago`;
+  const hrs = mins / 60;
+  if (hrs < 24) return `${Math.round(hrs)}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+
 export default function TrophyCase({ session, onSignOut }: { session: SessionResult; onSignOut: () => void }) {
+  // Snapshot freshness + manual refresh (23.3b). A refresh rebuilds in the
+  // BACKGROUND — the case keeps showing the current data meanwhile, so there is
+  // nothing to block on; the new data appears on the next load.
+  const [refreshing, setRefreshing] = useState(!!session.refreshing);
+  const [refreshErr, setRefreshErr] = useState<string | null>(null);
+  const updatedAgo = agoLabel(session.built_at);
+
+  async function doRefresh() {
+    if (refreshing) return;
+    setRefreshErr(null);
+    setRefreshing(true);
+    try {
+      await refreshSession(session.steam_id);
+    } catch (e) {
+      setRefreshErr((e as Error).message);
+      setRefreshing(false);
+    }
+  }
+
   const [lib, setLib] = useState<LibraryData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
@@ -137,6 +168,23 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+          {(updatedAgo || refreshing) && (
+            <span
+              title={refreshErr || (refreshing ? "Rebuilding from Steam in the background" : "When this snapshot was built from Steam")}
+              style={{ display: "flex", alignItems: "center", gap: 7, fontFamily: FONT_MONO, fontSize: 11, color: refreshErr ? "#ef6a6a" : C.inkDim }}
+            >
+              {refreshing ? "refreshing…" : `updated ${updatedAgo}`}
+              {!refreshing && (
+                <button
+                  onClick={doRefresh}
+                  title="Re-fetch this profile from Steam"
+                  style={{ background: "transparent", color: C.inkDim, border: `1px solid ${C.edge}`, borderRadius: 8, padding: "4px 8px", cursor: "pointer", fontSize: 11, fontFamily: FONT_MONO }}
+                >
+                  ↻
+                </button>
+              )}
+            </span>
+          )}
           <button onClick={onSignOut} style={{ background: "transparent", color: C.inkDim, border: `1px solid ${C.edge}`, borderRadius: 9, padding: "7px 12px", cursor: "pointer", fontSize: 12.5, fontFamily: FONT_HEAD }}>Sign out</button>
           <div style={{ textAlign: "right" }}>
             <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 600 }}>{p.name}</div>

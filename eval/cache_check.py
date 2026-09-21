@@ -44,12 +44,43 @@ try:
     check("dead redis: incr falls back to in-memory (1,2,3), not 0", counts == [1, 2, 3], str(counts))
     check("dead redis: ttl falls back to in-memory window", 0 < cache.ttl(k3) <= 60, str(cache.ttl(k3)))
     check("dead redis: ping() is False", cache.ping() is False)
-    check("dead redis: acquire_lock stays FAIL-OPEN (grants)", cache.acquire_lock(f"chk:lock:{time.time()}", 30) is True)
+    check("dead redis: acquire_lock stays FAIL-OPEN (grants)", bool(cache.acquire_lock(f"chk:lock:{time.time()}", 30)))
     check("dead redis: set/get degrade silently", (cache.set("chk:x", "1", 5) is None) and cache.get("chk:x") is None)
 finally:
     cache.using_redis, cache._pipeline = real_using, real_pipeline
+
+# ── 23.3c: OWNED locks (in-memory backend — same semantics as the Redis path) ──
+import importlib, os
+os.environ["UPSTASH_REDIS_REST_URL"] = ""
+os.environ["UPSTASH_REDIS_REST_TOKEN"] = ""
+import config as _cfg
+importlib.reload(_cfg)
+_mem_cache = importlib.reload(cache)
+check("in-memory backend for lock checks", not _mem_cache.using_redis())
+
+K = "chk:ownedlock"
+t1 = _mem_cache.acquire_lock(K, 30)
+check("acquire returns a token", bool(t1))
+check("second acquire blocked while held", _mem_cache.acquire_lock(K, 30) is None)
+check("heartbeat works for the owner", _mem_cache.refresh_lock(K, 30, t1) is True)
+check("heartbeat REJECTED for a stale token", _mem_cache.refresh_lock(K, 30, "stale-token") is False)
+_mem_cache.release_lock(K, "stale-token")
+check("stale token can NOT release the owner's lock", _mem_cache.exists(K))
+_mem_cache.release_lock(K, t1)
+check("owner releases its own lock", not _mem_cache.exists(K))
+
+# takeover after expiry: the old owner must not be able to extend or delete
+t_old = _mem_cache.acquire_lock(K, 1)
+time.sleep(1.1)
+t_new = _mem_cache.acquire_lock(K, 30)
+check("expired lock can be taken over", bool(t_new) and t_new != t_old)
+check("stalled build's heartbeat fails after takeover", _mem_cache.refresh_lock(K, 30, t_old) is False)
+_mem_cache.release_lock(K, t_old)
+check("stalled build can NOT delete the new owner's lock", _mem_cache.exists(K))
+_mem_cache.release_lock(K, t_new)
 
 print()
 passed, total = sum(_results), len(_results)
 print(f"  {passed} passed, {total - passed} failed")
 sys.exit(0 if passed == total else 1)
+
