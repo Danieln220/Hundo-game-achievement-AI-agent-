@@ -1,4 +1,5 @@
 import ReactMarkdown from "react-markdown";
+import { safeUrl } from "../safeUrl";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { assetUrl } from "../api";
@@ -82,13 +83,20 @@ export default function Message(props: Props) {
           <div className="sources">
             <div className="sources-head">Sources</div>
             <ol>
-              {result.sources!.map((s, i) => (
-                <li key={i}>
-                  <a href={s.url} target="_blank" rel="noreferrer">
-                    {s.title || s.url}
-                  </a>
-                </li>
-              ))}
+              {result.sources!.map((s, i) => {
+                const href = safeUrl(s.url);
+                return (
+                  <li key={i}>
+                    {href ? (
+                      <a href={href} target="_blank" rel="noreferrer">
+                        {s.title || s.url}
+                      </a>
+                    ) : (
+                      <span>{s.title || s.url}</span>
+                    )}
+                  </li>
+                );
+              })}
             </ol>
           </div>
         )}

@@ -29,6 +29,68 @@ export const isWaking = (e: unknown): boolean =>
   e instanceof TypeError ||
   (e instanceof ApiError && [502, 503, 504].includes(e.status ?? 0));
 
+// Retry schedule while the free-tier host boots (~85s total), then give up.
+const WAKE_DELAYS_MS = [3000, 5000, 8000, 10000, 10000, 10000, 10000, 10000, 10000, 10000];
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Run `fn`, riding out a cold start. A browser TypeError is ALSO what a genuinely
+// dropped connection looks like, so before claiming "waking up" we probe /health
+// once: if the server answers, the failure was real and is surfaced immediately
+// instead of being retried for 85 seconds behind a misleading message (23.5d).
+// `onWaking(true|false)` drives the caller's "waking the server" UI.
+export async function withWake<T>(
+  fn: () => Promise<T>,
+  onWaking?: (waking: boolean) => void,
+  isCancelled?: () => boolean,
+): Promise<T | undefined> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const out = await fn();
+      onWaking?.(false);
+      return out;
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") throw e;
+      let waking = isWaking(e);
+      if (waking && e instanceof TypeError) {
+        // The server answering /health means the network is fine → real error.
+        waking = await health().then(() => false).catch(() => true);
+      }
+      if (!waking || attempt >= WAKE_DELAYS_MS.length) {
+        onWaking?.(false);
+        if (waking) {
+          throw new ApiError(
+            "The server is taking unusually long to wake up — wait a minute and try again.",
+          );
+        }
+        throw e;
+      }
+      onWaking?.(true);
+      await sleep(WAKE_DELAYS_MS[attempt]);
+      if (isCancelled?.()) return undefined;
+    }
+  }
+}
+
+// Turn a failed Response into an ApiError carrying the server's own message.
+// The backend always sends a readable string `detail` (429 "Rate limit reached
+// (15 per min). Try again in ~42s.", 404 unknown profile, 400 bad input), so a
+// bare "Request failed (429)" is always a regression — the streaming path used
+// to do exactly that (23.5b).
+export async function apiError(res: Response): Promise<ApiError> {
+  let detail = `Request failed (${res.status})`;
+  try {
+    const j = await res.json();
+    if (typeof j?.detail === "string") detail = j.detail;
+  } catch {
+    /* non-JSON error body */
+  }
+  const retry = res.headers.get("retry-after");
+  if (res.status === 429 && retry && !detail.includes(retry)) {
+    detail += ` (retry in ${retry}s)`;
+  }
+  return new ApiError(detail, res.status);
+}
+
 async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(BASE + path, {
     method: "POST",
@@ -36,31 +98,13 @@ async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promi
     body: JSON.stringify(body),
     signal,
   });
-  if (!res.ok) {
-    let detail = `Request failed (${res.status})`;
-    try {
-      const j = await res.json();
-      if (j?.detail) detail = j.detail;
-    } catch {
-      /* non-JSON error body */
-    }
-    throw new ApiError(detail, res.status);
-  }
+  if (!res.ok) throw await apiError(res);
   return res.json() as Promise<T>;
 }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path);
-  if (!res.ok) {
-    let detail = `Request failed (${res.status})`;
-    try {
-      const j = await res.json();
-      if (j?.detail) detail = j.detail;
-    } catch {
-      /* non-JSON error body */
-    }
-    throw new ApiError(detail, res.status);
-  }
+  if (!res.ok) throw await apiError(res);
   return res.json() as Promise<T>;
 }
 
@@ -129,12 +173,16 @@ export async function askStream(
     body: JSON.stringify({ question, steam_id, history, with_insight: true }),
     signal,
   });
-  if (!res.ok || !res.body) throw new Error(`Stream failed (${res.status})`);
+  // Keep the server's message (429 detail, 404, 400) instead of a bare status —
+  // this path used to throw "Stream failed (429)" and lose it (23.5b).
+  if (!res.ok) throw await apiError(res);
+  if (!res.body) throw new ApiError("The server sent an empty response.", res.status);
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let result: AskResult = {};
+  let gotResult = false;
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -154,11 +202,27 @@ export async function askStream(
         else if (line.startsWith("data:")) data += (data ? "\n" : "") + line.slice(5).trim();
       }
       if (!data) continue;
-      const parsed = JSON.parse(data);
-      if (event === "progress") onProgress(parsed.node);
-      else if (event === "token") onToken?.(parsed.text);
-      else if (event === "result") result = parsed;
+      // One malformed frame must not kill a stream whose answer is otherwise
+      // fine — skip it and keep reading (23.5f).
+      let parsed: { node?: string; text?: string } & AskResult;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (event === "progress") onProgress(parsed.node ?? "");
+      else if (event === "token") onToken?.(parsed.text ?? "");
+      else if (event === "result") {
+        result = parsed;
+        gotResult = true;
+      }
     }
+  }
+  // A stream that ends without a `result` event produced NOTHING. Returning {}
+  // here used to add a blank assistant turn with no Retry button, which then fed
+  // the agent an empty answer as context on the next question (23.5b).
+  if (!gotResult) {
+    throw new ApiError("The answer didn't come through — please try again.");
   }
   return result;
 }

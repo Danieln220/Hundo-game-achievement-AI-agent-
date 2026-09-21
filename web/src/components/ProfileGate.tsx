@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { health, isWaking, session, sessionStatus, steamLoginUrl } from "../api";
+import { health, session, sessionStatus, steamLoginUrl, withWake as apiWithWake } from "../api";
 import type { SessionResult } from "../types";
 
 const POLL_MS = 1500; // how often to poll /session/status while a snapshot builds
@@ -11,10 +11,6 @@ const POLL_STALL_MS = 3 * 60 * 1000;
 const STUCK_MSG =
   "The profile build stopped making progress — it may have been interrupted. Please try again.";
 
-// Retry schedule for a cold-starting server (Render free tier naps when idle and
-// takes 30–90s to boot; its edge answers 502 meanwhile — the browser shows that
-// as a bare "Failed to fetch" without this). ~85s total, then we give up.
-const WAKE_DELAYS_MS = [3000, 5000, 8000, 10000, 10000, 10000, 10000, 10000, 10000, 10000];
 
 export default function ProfileGate({
   onLoaded,
@@ -52,32 +48,9 @@ export default function ProfileGate({
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  // Run a request, riding out a cold start: on a wake-shaped failure keep
-  // retrying (with a visible "waking the server" state) instead of surfacing
-  // the browser's raw "Failed to fetch". Real refusals (404 unknown profile,
-  // 429 rate limit) surface immediately. Returns undefined if the gate was
-  // unmounted mid-wait.
-  async function withWake<T>(fn: () => Promise<T>): Promise<T | undefined> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const out = await fn();
-        setWaking(false);
-        return out;
-      } catch (e) {
-        if (!isWaking(e) || attempt >= WAKE_DELAYS_MS.length) {
-          if (isWaking(e)) {
-            throw new Error(
-              "The server is taking unusually long to wake up — wait a minute and try again."
-            );
-          }
-          throw e;
-        }
-        setWaking(true);
-        await sleep(WAKE_DELAYS_MS[attempt]);
-        if (cancelled.current) return undefined;
-      }
-    }
-  }
+  // Cold-start retry now lives in api.ts (shared with Chat — 23.5d).
+  const withWake = <T,>(fn: () => Promise<T>) =>
+    apiWithWake(fn, setWaking, () => cancelled.current);
 
   // "Sign in through Steam" is a FULL-PAGE navigation to the API (it must be —
   // the API redirects to Steam). Navigating at a sleeping server would land on

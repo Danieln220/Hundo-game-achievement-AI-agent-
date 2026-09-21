@@ -1,4 +1,5 @@
 import type { Achievement, RoadmapData } from "../types";
+import { safeUrl } from "../safeUrl";
 import { RarityChip } from "../rarity";
 
 function Tier({
@@ -86,13 +87,20 @@ export default function RoadmapCard({
         <div className="roadmap-howto">
           <b>Guides for the hardest:</b>
           <ul>
-            {data.howto.map((h, i) => (
-              <li key={i}>
-                <a href={h.url} target="_blank" rel="noreferrer">
-                  {h.name}
-                </a>
-              </li>
-            ))}
+            {data.howto.map((h, i) => {
+              const href = safeUrl(h.url);
+              return (
+                <li key={i}>
+                  {href ? (
+                    <a href={href} target="_blank" rel="noreferrer">
+                      {h.name}
+                    </a>
+                  ) : (
+                    <span>{h.name}</span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

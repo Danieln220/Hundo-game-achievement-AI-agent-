@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { askStream, chart } from "../api";
+import { askStream, chart, withWake } from "../api";
 import type { AskResult, ChartSpec, Turn } from "../types";
 import Message from "./Message";
 import ProgressSteps from "./ProgressSteps";
@@ -47,6 +47,9 @@ export default function Chat({
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string[]>([]);
   const [streamingText, setStreamingText] = useState(""); // live answer tokens
+  // Server cold-starting mid-conversation (Render free tier naps when idle) —
+  // retried quietly by withWake instead of showing a raw "Failed to fetch".
+  const [waking, setWaking] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -149,15 +152,21 @@ export default function Chat({
     setStreamingText("");
 
     try {
-      const result = await askStream(
+      const result = await withWake(() => askStream(
         q,
         steamId,
         history,
-        (node) => setProgress((p) => [...p, node]),
+        (node) => {
+          setProgress((p) => [...p, node]);
+          // A new node means a NEW draft: when the verifier rejects an answer
+          // the agent re-runs finalize, and without this the second draft was
+          // appended to the first (one answer typing over another) — 23.5a.
+          setStreamingText("");
+        },
         controller.signal,
         (tok) => setStreamingText((s) => s + tok)
-      );
-      if (resetSeq.current !== seq) return; // chat was reset mid-request
+      ), setWaking, () => resetSeq.current !== seq);
+      if (resetSeq.current !== seq || result === undefined) return; // reset/cancelled mid-request
       setStreamingText("");
       setMessages((m) => [
         ...m,
@@ -205,6 +214,7 @@ export default function Chat({
       ]);
     } finally {
       setBusy(false);
+      setWaking(false);
       setStreamingText("");
       abortRef.current = null;
     }
@@ -261,7 +271,12 @@ export default function Chat({
             </div>
           </div>
         )}
-        {busy && !streamingText && <ProgressSteps nodes={progress} />}
+        {busy && waking && (
+          <div className="muted" style={{ fontSize: 13, padding: "4px 2px" }}>
+            Waking the server (it naps when idle)…
+          </div>
+        )}
+        {busy && !waking && !streamingText && <ProgressSteps nodes={progress} />}
         <div ref={endRef} />
       </div>
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { safeUrl } from "../safeUrl";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { askStream, ask } from "../api";
@@ -13,7 +14,7 @@ const NODE_LABEL: Record<string, string> = {
   execute_code: "Verifying achievements", validate_output: "Checking", roadmap: "Charting the quest",
 };
 
-type GuideState = { loading: boolean; answer?: string; sources?: { title: string; url: string }[] };
+type GuideState = { loading: boolean; answer?: string; error?: string; sources?: { title: string; url: string }[] };
 
 export default function RoadmapView({ steamId, library, initialGame, onClose }: {
   steamId: string; library: LibGame[]; initialGame?: string; onClose: () => void;
@@ -36,37 +37,56 @@ export default function RoadmapView({ steamId, library, initialGame, onClose }: 
 
   const lsKey = (target: string) => `hundo_rm_${steamId}_${target.toLowerCase().replace(/\s+/g, "_")}`;
 
+  // localStorage throws in private mode / when storage is blocked — a checklist
+  // tick must never break the view because of it (23.5c).
+  function loadChecked(target: string): string[] {
+    try {
+      const saved = JSON.parse(localStorage.getItem(lsKey(target)) || "[]");
+      return Array.isArray(saved) ? saved : [];
+    } catch { return []; }
+  }
+  function saveChecked(target: string, names: string[]): void {
+    try { localStorage.setItem(lsKey(target), JSON.stringify(names)); } catch { /* ignore */ }
+  }
+
   async function build(g: string) {
     const target = g.trim();
     if (!target || loading) return;
+    // Supersede any in-flight build — a second click (or a new game) must not
+    // leave the first request running and then overwrite the newer result.
+    abortRef.current?.abort();
     setGame(target); setData(null); setError(null); setLoading(true); setProgress("");
     const ctrl = new AbortController(); abortRef.current = ctrl;
     try {
       const res = await askStream(`Build me a roadmap to 100% ${target}`, steamId, [],
         (node) => setProgress(NODE_LABEL[node] ?? "Working"), ctrl.signal);
+      if (ctrl.signal.aborted) return;   // closed/superseded while streaming
       if (res.roadmap) {
         setData(res.roadmap);
-        try {
-          const saved = JSON.parse(localStorage.getItem(lsKey(res.roadmap.target)) || "[]");
-          setChecked(new Set(saved));
-        } catch { setChecked(new Set()); }
+        setChecked(new Set(loadChecked(res.roadmap.target)));
       } else {
         setError(res.answer || "Couldn't build a roadmap for that game.");
       }
     } catch (e) {
+      if (ctrl.signal.aborted) return;
       setError((e as Error).name === "AbortError" ? null : (e as Error).message);
-    } finally { setLoading(false); abortRef.current = null; }
+    } finally {
+      if (abortRef.current === ctrl) { setLoading(false); abortRef.current = null; }
+    }
   }
 
   useEffect(() => { if (initialGame) build(initialGame); /* eslint-disable-next-line */ }, []);
+  // Abort an in-flight build when the view closes/unmounts: it used to keep
+  // streaming (and spending tokens server-side) after the user left (23.5c).
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   function toggleCheck(name: string) {
-    setChecked((prev) => {
-      const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
-      if (data) localStorage.setItem(lsKey(data.target), JSON.stringify([...next]));
-      return next;
-    });
+    // The write stays OUT of the state updater: React re-invokes updaters (e.g.
+    // StrictMode double-render), so persisting inside one wrote twice (23.5c).
+    const next = new Set(checked);
+    next.has(name) ? next.delete(name) : next.add(name);
+    setChecked(next);
+    if (data) saveChecked(data.target, [...next]);
   }
   const flip = (set: Set<string>, k: string, setter: (s: Set<string>) => void) => {
     const n = new Set(set); n.has(k) ? n.delete(k) : n.add(k); setter(n);
@@ -78,8 +98,10 @@ export default function RoadmapView({ steamId, library, initialGame, onClose }: 
     try {
       const r = await ask(`How do I unlock "${a.name}" in ${data.target}?`, steamId, []);
       setGuides((g) => ({ ...g, [a.name]: { loading: false, answer: r.answer, sources: r.sources } }));
-    } catch {
-      setGuides((g) => ({ ...g, [a.name]: { loading: false, answer: "Couldn't load a guide right now." } }));
+    } catch (e) {
+      // Store as an ERROR, not as the answer: an answer blocks the early-return
+      // guard above, so a rate-limited guide could never be retried (23.5c).
+      setGuides((g) => ({ ...g, [a.name]: { loading: false, error: (e as Error).message } }));
     }
   }
 
@@ -193,16 +215,35 @@ export default function RoadmapView({ steamId, library, initialGame, onClose }: 
                           {a.description
                             ? <p style={{ color: C.inkDim, fontSize: 13, lineHeight: 1.5, margin: "0 0 10px" }}>{a.description}</p>
                             : a.hidden && <p style={{ color: C.inkFaint, fontSize: 13, lineHeight: 1.5, margin: "0 0 10px", fontStyle: "italic" }}>🔒 Hidden — Steam doesn't publish its steps; load a guide below.</p>}
-                          {!guide && <button onClick={() => loadGuide(a)} style={guideBtn}>↗ Load a guide</button>}
+                          {(!guide || guide.error) && (
+                            <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+                              <button onClick={() => loadGuide(a)} style={guideBtn}>
+                                {guide?.error ? "↻ Try again" : "↗ Load a guide"}
+                              </button>
+                              {guide?.error && (
+                                <span style={{ color: "#ef6a6a", fontFamily: FONT_MONO, fontSize: 12 }}>{guide.error}</span>
+                              )}
+                            </div>
+                          )}
                           {guide?.loading && <div style={{ color: C.gold, fontFamily: FONT_MONO, fontSize: 12.5, display: "flex", gap: 8, alignItems: "center" }}><span className="spinner" /> finding a guide…</div>}
                           {guide?.answer && (
                             <div style={{ background: C.case, border: `1px solid ${C.edge}`, borderRadius: 10, padding: "11px 13px" }}>
                               <div className="markdown" style={{ fontSize: 13.5, lineHeight: 1.5 }}>
-                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer" style={{ color: C.gold }}>{children}</a> }}>{guide.answer}</ReactMarkdown>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => {
+                                  const safe = safeUrl(href);
+                                  return safe
+                                    ? <a href={safe} target="_blank" rel="noreferrer" style={{ color: C.gold }}>{children}</a>
+                                    : <span>{children}</span>;
+                                } }}>{guide.answer}</ReactMarkdown>
                               </div>
                               {!!guide.sources?.length && (
                                 <ol style={{ margin: "8px 0 0", paddingLeft: 20, fontSize: 12.5 }}>
-                                  {guide.sources.map((s, j) => <li key={j}><a href={s.url} target="_blank" rel="noreferrer" style={{ color: C.gold }}>{s.title || s.url}</a></li>)}
+                                  {guide.sources.map((s, j) => {
+                                    const href = safeUrl(s.url);
+                                    return <li key={j}>{href
+                                      ? <a href={href} target="_blank" rel="noreferrer" style={{ color: C.gold }}>{s.title || s.url}</a>
+                                      : <span>{s.title || s.url}</span>}</li>;
+                                  })}
                                 </ol>
                               )}
                             </div>
