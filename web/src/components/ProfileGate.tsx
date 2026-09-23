@@ -45,7 +45,7 @@ export default function ProfileGate({
   // Warm the free-tier server the moment the gate renders, so it's usually
   // awake before the user finishes typing or clicks the Steam button. The same
   // probe tells us whether the public demo profile is configured.
-  const [demoOn, setDemoOn] = useState(false);
+  const [demoOn, setDemoOn] = useState(coach);
   useEffect(() => { health().then((h) => setDemoOn(!!h.demo)).catch(() => {}); }, []);
 
   // Returning from "Sign in through Steam": the backend bounced us back with a

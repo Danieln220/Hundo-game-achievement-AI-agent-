@@ -191,7 +191,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
 
   // "Get the guide" / the example questions enter the demo with that question
   // pre-filled — the gate does the loading, the question rides along.
-  const [demoOn, setDemoOn] = useState(false);
+  const [demoOn, setDemoOn] = useState(true);
   useEffect(() => { health().then((h) => setDemoOn(!!h.demo)).catch(() => {}); }, []);
   // Stale-while-revalidate for the hero: the frozen plan paints at once; the
   // live one replaces it in place when the API answers. A failure changes nothing.
@@ -274,7 +274,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
             <span className="landing-label landing-label-grind lr" style={d(1.8)}>Then the grind</span>
             <div className="landing-plan-grind lr" style={d(1.9)}>
               {grind.map((g) => (
-                <span key={g.name} className={g.hidden ? "muted" : ""}><span>{g.name} <i>· {g.hidden ? "hidden — the guide reveals it" : g.desc.replace(/\.$/, "").toLowerCase()}</i></span><span className={`landing-t-${tierOf(g.pct)}`}>{pctLabel(g.pct)}</span></span>
+                <span key={g.name} className={g.hidden ? "muted" : ""}><span>{g.name} <i>· {g.hidden ? "hidden — the guide reveals it" : g.desc.replace(/\.$/, "")}</i></span><span className={`landing-t-${tierOf(g.pct)}`}>{pctLabel(g.pct)}</span></span>
               ))}
               {plan.meta && (
                 <span className="muted"><span>{plan.meta.name} <i>· unlocks with the rest</i></span><span className={`landing-t-${tierOf(plan.meta.pct)}`}>{pctLabel(plan.meta.pct)}</span></span>
