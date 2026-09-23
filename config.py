@@ -89,6 +89,28 @@ UPSTASH_REDIS_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").rstrip("/"
 UPSTASH_REDIS_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "")
 USE_REDIS = bool(UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN)
 
+# Public DEMO profile (20.0a): lets a visitor with no Steam account use the REAL
+# app. The browser only ever sees the alias "demo" — the API maps it to this id
+# and returns a generic name/avatar, so the underlying account stays anonymous.
+# Empty → the demo button is simply unavailable.
+DEMO_STEAM_ID = os.environ.get("DEMO_STEAM_ID", "")
+DEMO_ALIAS = "demo"
+DEMO_DISPLAY_NAME = os.environ.get("DEMO_DISPLAY_NAME", "Demo Collector")
+# Agent questions/day across ALL demo visitors. Cached + fast-path answers are
+# free and don't count. 0 disables the demo's question limit entirely.
+DEMO_ASK_PER_DAY = int(os.environ.get("DEMO_ASK_PER_DAY", "30"))
+
+# Secret that signs the identity token issued after a verified Steam OpenID
+# sign-in (23.4b). Falls back to a key we already have so no new env var is
+# required; when NOTHING is set, memory degrades to read-only (never silently
+# trusts an unverified caller). A signed TOKEN, not a cookie: the frontend and
+# API are different sites, so a cookie would be third-party — blocked by default
+# in Safari and increasingly in Chrome.
+AUTH_SECRET = (os.environ.get("AUTH_SECRET", "")
+               or os.environ.get("SUPABASE_SERVICE_KEY", "")
+               or "")
+AUTH_TOKEN_TTL_DAYS = float(os.environ.get("AUTH_TOKEN_TTL_DAYS", "30"))
+
 # Which engine builds a roadmap for an OWNED, explicitly-named game (23.6a):
 #   "deterministic" — pure pandas over the snapshot (default: ~1s, cannot fail
 #                     into a code-gen error, cannot hallucinate an achievement)

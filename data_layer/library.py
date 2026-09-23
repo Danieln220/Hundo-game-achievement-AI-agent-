@@ -6,6 +6,8 @@ few precomputed "curator" highlights (rarest / quick wins / closest / stalled /
 beatable). Pure pandas over load_frames + the raw schema (for icons); no agent,
 no network. Returns plain JSON-serializable types.
 """
+import re
+
 import pandas as pd
 
 from .snapshot import load_frames, load_schemas
@@ -180,3 +182,33 @@ def _curator(merged: pd.DataFrame, games_out: list[dict], gname: dict) -> dict:
     ]
     return {"rarest": rarest, "quick": quick, "closest": closest,
             "stalled": stalled, "beatable": beatable}
+
+
+_META_RE = re.compile(r"\ball (the )?(achievements|trophies)\b", re.I)
+
+
+def next_plan(lib: dict) -> dict | None:
+    """The "next up" plan for a built library (17.12): the closest game to 100%
+    (fallback: the most-complete unfinished game) with its LOCKED achievements
+    easiest-first — highest global unlock rate first, unknown rarity last. The
+    meta-achievement ("obtain all achievements") is split out: it unlocks with
+    the rest, so it isn't something to chase. Names, descriptions and rarity
+    only — small enough to cache and to ship to a landing page."""
+    games = [g for g in lib.get("games", []) if g.get("total") and g["unlocked"] < g["total"]]
+    if not games:
+        return None
+    closest = (lib.get("curator") or {}).get("closest")
+    game = next((g for g in games if closest and g["game"] == closest["game"]), None)
+    if game is None:
+        game = max(games, key=lambda g: g["pct"])
+    locked = [a for a in game["achievements"] if not a["achieved"]]
+    meta = next((a for a in locked if _META_RE.search(a.get("desc") or "")), None)
+    rest = sorted((a for a in locked if a is not meta),
+                  key=lambda a: (a["pct"] is None, -(a["pct"] or 0)))
+    item = lambda a: {"name": a["name"], "desc": a["desc"], "pct": a["pct"], "hidden": bool(a["hidden"])}
+    return {
+        "game": game["game"], "unlocked": game["unlocked"], "total": game["total"],
+        "pct": round(float(game["pct"]), 1), "left": game["total"] - game["unlocked"],
+        "locked": [item(a) for a in rest],
+        "meta": item(meta) if meta else None,
+    }

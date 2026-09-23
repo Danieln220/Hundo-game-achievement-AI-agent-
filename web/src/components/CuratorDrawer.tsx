@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Chat from "./Chat";
-import { getMemory, clearMemory } from "../api";
+import { DEMO_PROFILE, getMemory, clearMemory } from "../api";
 import { C } from "../tcTheme";
 
 const FONT_HEAD = "'Chakra Petch',sans-serif";
@@ -13,6 +13,9 @@ export default function CuratorDrawer({ open, onClose, steamId, games, inject, g
   inject?: { q: string; nonce: number };
   greeting?: string; starters?: { label: string; q?: string; fill?: string }[];
 }) {
+  // Demo traffic is anonymous — it never reads or writes memory, so the panel
+  // would only ever report that it's off. Hide it instead.
+  const memoryOffered = steamId !== DEMO_PROFILE;
   const [memOpen, setMemOpen] = useState(false);
   const [mem, setMem] = useState<string | null>(null);
   const asideRef = useRef<HTMLElement>(null);
@@ -31,14 +34,26 @@ export default function CuratorDrawer({ open, onClose, steamId, games, inject, g
     return () => document.removeEventListener("keydown", h);
   }, [open, onClose, memOpen]);
 
+  const [memVerified, setMemVerified] = useState(true);
+  const [memErr, setMemErr] = useState<string | null>(null);
+
   function toggleMem() {
     const next = !memOpen;
     setMemOpen(next);
-    if (next) { setMem(null); getMemory(steamId).then((r) => setMem(r.memory || "")).catch(() => setMem("")); }
+    if (next) {
+      setMem(null);
+      getMemory(steamId)
+        .then((r) => { setMem(r.memory || ""); setMemVerified(r.verified !== false); })
+        .catch(() => setMem(""));
+    }
   }
   async function wipeMem() {
-    await clearMemory(steamId).catch(() => {});
-    setMem("");
+    try {
+      await clearMemory(steamId);
+      setMem("");
+    } catch (e) {
+      setMemErr((e as Error).message);
+    }
   }
 
   return (
@@ -59,21 +74,27 @@ export default function CuratorDrawer({ open, onClose, steamId, games, inject, g
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={toggleMem} title="What I remember about you"
-              style={{ display: "grid", placeItems: "center", padding: 0, lineHeight: 1, background: memOpen ? C.case2 : "transparent", border: `1px solid ${memOpen ? C.goldLo : C.edge}`, color: memOpen ? C.gold : C.inkDim, borderRadius: 9, width: 32, height: 32, cursor: "pointer", fontSize: 15 }}>🧠</button>
+            {memoryOffered && <button onClick={toggleMem} title="What I remember about you"
+              style={{ display: "grid", placeItems: "center", padding: 0, lineHeight: 1, background: memOpen ? C.case2 : "transparent", border: `1px solid ${memOpen ? C.goldLo : C.edge}`, color: memOpen ? C.gold : C.inkDim, borderRadius: 9, width: 32, height: 32, cursor: "pointer", fontSize: 15 }}>🧠</button>}
             <button onClick={onClose} style={{ display: "grid", placeItems: "center", padding: 0, lineHeight: 1, background: "transparent", border: `1px solid ${C.edge}`, color: C.inkDim, borderRadius: 9, width: 32, height: 32, cursor: "pointer", fontSize: 15 }}>✕</button>
           </div>
         </div>
-        {memOpen && (
+        {memoryOffered && memOpen && (
           <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.edge}`, background: "rgba(232,179,57,0.04)" }}>
             <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: "1px", textTransform: "uppercase", color: C.gold, marginBottom: 7 }}>What I remember about you</div>
             {mem === null ? (
               <div style={{ color: C.inkDim, fontSize: 13 }}>Loading…</div>
             ) : mem.trim() ? (
               <div style={{ color: C.ink, fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{mem}</div>
-            ) : (
+            ) : memVerified ? (
               <div style={{ color: C.inkFaint, fontSize: 13, fontStyle: "italic" }}>Nothing yet — I'll pick up your goals and preferences as we chat.</div>
+            ) : (
+              <div style={{ color: C.inkFaint, fontSize: 13, fontStyle: "italic" }}>
+                Memory is off for a profile you typed in. Sign in through Steam and Hundo will
+                remember your goals between visits — and only you can read or clear them.
+              </div>
             )}
+            {memErr && <div style={{ color: "#ef6a6a", fontSize: 12.5, marginTop: 6 }}>{memErr}</div>}
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 9 }}>
               <button onClick={wipeMem} disabled={!mem || !mem.trim()}
                 style={{ background: "transparent", border: `1px solid ${C.edge}`, color: C.inkDim, borderRadius: 8, padding: "4px 11px", fontSize: 12, cursor: mem && mem.trim() ? "pointer" : "default", fontFamily: FONT_HEAD, opacity: mem && mem.trim() ? 1 : 0.5 }}>Clear memory</button>

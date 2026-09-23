@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getLibrary, getPopular, refreshSession } from "../api";
+import { DEMO_PROFILE, getLibrary, getPopular, refreshSession } from "../api";
 import type { Card, LibGame, LibraryData, SessionResult } from "../types";
 import { C, tierOf, tierColor, pctLabel, HOLO, STEAM_HEADER, onImgError } from "../tcTheme";
 import AchievementCard from "./AchievementCard";
 import CuratorDrawer from "./CuratorDrawer";
 import RoadmapView from "./RoadmapView";
+import PlanHome from "./PlanHome";
 
 type FilterKey = "all" | "ultra" | "rare" | "uncommon" | "common";
 type ShowKey = "all" | "unlocked" | "locked";
@@ -44,7 +45,7 @@ function agoLabel(builtAt?: number | null): string | null {
   return `${Math.round(hrs / 24)}d ago`;
 }
 
-export default function TrophyCase({ session, onSignOut }: { session: SessionResult; onSignOut: () => void }) {
+export default function TrophyCase({ session, onSignOut, initialQuestion }: { session: SessionResult; onSignOut: () => void; initialQuestion?: string }) {
   // Snapshot freshness + manual refresh (23.3b). A refresh rebuilds in the
   // BACKGROUND — the case keeps showing the current data meanwhile, so there is
   // nothing to block on; the new data appears on the next load.
@@ -77,6 +78,13 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
   const [gameView, setGameView] = useState<LibGame | null>(null);
   const [curatorOpen, setCuratorOpen] = useState(false);
   const [inject, setInject] = useState<{ q: string; nonce: number }>({ q: "", nonce: 0 });
+  // Front door (17.y): the plan first, the case one tab over. The last choice
+  // is remembered per browser (a convenience, so it degrades to "plan").
+  const viewKey = `hundo_view_${session.steam_id}`;
+  const [view, setView] = useState<"plan" | "case">(() => {
+    try { return localStorage.getItem(viewKey) === "case" ? "case" : "plan"; } catch { return "plan"; }
+  });
+  useEffect(() => { try { localStorage.setItem(viewKey, view); } catch { /* ignore */ } }, [viewKey, view]);
   const [roadmapOpen, setRoadmapOpen] = useState(false);
   const [roadmapGame, setRoadmapGame] = useState("");
   const [popular, setPopular] = useState<{ appid: number; name: string }[]>([]);
@@ -100,6 +108,15 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
   }, [selected, gameView]);
 
   function askCurator(q: string) { setInject((i) => ({ q, nonce: i.nonce + 1 })); setCuratorOpen(true); setSelected(null); setGameView(null); }
+  // A question handed over by the landing page is asked once, as soon as the
+  // library is in (the drawer needs the profile numbers for its greeting).
+  const askedInitial = useRef(false);
+  useEffect(() => {
+    if (!lib || !initialQuestion || askedInitial.current) return;
+    askedInitial.current = true;
+    askCurator(initialQuestion);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lib, initialQuestion]);
   function openRoadmap(g = "") { setRoadmapGame(g); setRoadmapOpen(true); setSelected(null); setGameView(null); }
 
   const filtered = useMemo(() => {
@@ -153,7 +170,7 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
   return (
     <div style={{ maxWidth: 1320, margin: "0 auto", padding: "0 32px 110px" }}>
       {/* HEADER */}
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 2px 16px", borderBottom: `1px solid ${C.edge}` }}>
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, padding: "20px 2px 16px", borderBottom: `1px solid ${C.edge}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
           <span style={{ width: 42, height: 42, display: "grid", placeItems: "center", background: "linear-gradient(180deg,#1a1f2e,#12151f)", border: `1px solid ${C.edge}`, borderRadius: 11, position: "relative" }}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -164,10 +181,10 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
           </span>
           <div>
             <h1 style={{ margin: 0, fontFamily: FONT_HEAD, fontSize: 21, fontWeight: 700 }}>Hundo</h1>
-            <span style={{ display: "block", fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "1.6px", textTransform: "uppercase", color: C.gold, fontWeight: 600 }}>The Trophy Case</span>
+            <span style={{ display: "block", fontFamily: FONT_MONO, fontSize: 11, letterSpacing: "1.6px", textTransform: "uppercase", color: C.gold, fontWeight: 600 }}>Achievement coach</span>
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 11, flexWrap: "wrap", justifyContent: "flex-end", minWidth: 0 }}>
           {(updatedAgo || refreshing) && (
             <span
               title={refreshErr || (refreshing ? "Rebuilding from Steam in the background" : "When this snapshot was built from Steam")}
@@ -185,8 +202,8 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
               )}
             </span>
           )}
-          <button onClick={onSignOut} style={{ background: "transparent", color: C.inkDim, border: `1px solid ${C.edge}`, borderRadius: 9, padding: "7px 12px", cursor: "pointer", fontSize: 12.5, fontFamily: FONT_HEAD }}>Sign out</button>
-          <div style={{ textAlign: "right" }}>
+          <button onClick={onSignOut} style={{ background: "transparent", color: C.inkDim, border: `1px solid ${C.edge}`, borderRadius: 9, padding: "7px 12px", cursor: "pointer", fontSize: 12.5, fontFamily: FONT_HEAD }}>{session.steam_id === DEMO_PROFILE ? "Exit demo" : "Sign out"}</button>
+          <div style={{ textAlign: "right", minWidth: 0 }}>
             <div style={{ fontFamily: FONT_HEAD, fontSize: 15, fontWeight: 600 }}>{p.name}</div>
             <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.inkDim }}>{p.gamesTotal} games · {p.unlocked.toLocaleString()} unlocks</div>
           </div>
@@ -194,6 +211,29 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
         </div>
       </header>
 
+      {/* VIEW TABS — the plan is the front door; the case is one tab over */}
+      <nav aria-label="Views" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginTop: 14 }}>
+        <div style={{ display: "flex", gap: 6, padding: 4, borderRadius: 999, border: `1px solid ${C.edge}`, background: C.panel2 }}>
+          <button onClick={() => setView("plan")} aria-current={view === "plan" ? "page" : undefined}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 999, border: "none", cursor: "pointer", fontFamily: FONT_HEAD, fontSize: 13.5, fontWeight: 700, background: view === "plan" ? `linear-gradient(180deg,${C.gold},#c9991f)` : "transparent", color: view === "plan" ? "#1a1303" : "#c2c9d6" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14" /><path d="m13 6 6 6-6 6" /></svg>
+            Next up
+          </button>
+          <button onClick={() => setView("case")} aria-current={view === "case" ? "page" : undefined}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 999, border: "none", cursor: "pointer", fontFamily: FONT_HEAD, fontSize: 13.5, fontWeight: 700, background: view === "case" ? `linear-gradient(180deg,${C.gold},#c9991f)` : "transparent", color: view === "case" ? "#1a1303" : "#c2c9d6" }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6" /></svg>
+            The case
+            <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, fontWeight: 400, color: view === "case" ? "#4a3a0c" : C.inkDim }}>{p.unlocked.toLocaleString()} · {p.overall}%</span>
+          </button>
+        </div>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.inkDim }}>computed from your library · nothing here is guessed</span>
+      </nav>
+
+      {view === "plan" ? (
+        <PlanHome lib={lib} steamId={session.steam_id} onRoadmap={openRoadmap} onAsk={askCurator}
+          onCard={(c) => setSelected(c)} onGame={(g) => setGameView(g)} onOpenCase={() => setView("case")} />
+      ) : (
+      <>
       {/* SHORTCUTS */}
       <div style={{ display: "flex", gap: 8, marginTop: 13, flexWrap: "wrap" }}>
         <button onClick={() => openRoadmap()} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", borderRadius: 999, cursor: "pointer", fontFamily: FONT_HEAD, fontSize: 13, fontWeight: 700, background: `linear-gradient(180deg,${C.gold},#c9991f)`, color: "#1a1303", border: "none" }}>
@@ -399,6 +439,9 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
         </>
       )}
 
+      </>
+      )}
+
       {selected && <CardModal card={selected} onClose={() => setSelected(null)} onAsk={() => askCurator(`How do I unlock "${selected.name}" in ${selected.game}?`)} onGame={() => { const g = lib.games.find((x) => x.game === selected.game); setSelected(null); if (g) setGameView(g); }} />}
       {gameView && <GameModal g={gameView} onClose={() => setGameView(null)} onRoadmap={() => openRoadmap(gameView.game)} onCard={(c) => { setGameView(null); setSelected(c); }} />}
 
@@ -406,7 +449,7 @@ export default function TrophyCase({ session, onSignOut }: { session: SessionRes
         <button onClick={() => setCuratorOpen(true)} style={{ position: "fixed", right: 26, bottom: 26, zIndex: 40, display: "flex", alignItems: "center", gap: 9, padding: "13px 18px", border: "none", borderRadius: 999, cursor: "pointer", background: `linear-gradient(180deg,${C.gold},#c9991f)`, color: "#1a1303", fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 14, letterSpacing: ".3px", boxShadow: "0 8px 24px -8px rgba(232,179,57,.6)" }}>✦ Ask the curator</button>
       )}
       <CuratorDrawer open={curatorOpen} onClose={() => setCuratorOpen(false)} steamId={session.steam_id} games={p.gamesTotal} inject={inject}
-        greeting={`Welcome to your case — I've catalogued ${p.unlocked.toLocaleString()} unlocks across ${p.gamesWithAch} games, and you're ${p.overall}% of the way to a full Hundo. Ask me what's worth chasing next.`}
+        greeting={`Ask me what to chase next. I've read your library — ${p.unlocked.toLocaleString()} unlocks across ${p.gamesWithAch} games, ${p.overall}% of the way to a full Hundo — and every answer is computed from it.`}
         starters={[
           { label: "🗺️ Build a roadmap to 100% …", fill: "Build me a roadmap to 100% " },
           { label: "⏱️ How long to 100% …", fill: "How long does it take to 100% " },

@@ -8,6 +8,7 @@ Run locally:
 Then open http://localhost:8000/docs for the auto-generated API.
 """
 import hashlib
+import hmac
 import json
 import re
 import urllib.parse
@@ -28,14 +29,15 @@ from config import (
     RATE_LIMIT_STATUS_PER_MIN, MAX_QUESTION_CHARS, MAX_HISTORY_TURNS,
     MAX_HISTORY_ANSWER_CHARS,
     SNAPSHOT_TTL_DAYS, PUBLIC_API_URL, FRONTEND_URL, ANSWER_CACHE_TTL_SECONDS,
-    SNAPSHOT_WAIT_MAX,
+    SNAPSHOT_WAIT_MAX, AUTH_SECRET, AUTH_TOKEN_TTL_DAYS,
+    DEMO_STEAM_ID, DEMO_ALIAS, DEMO_DISPLAY_NAME, DEMO_ASK_PER_DAY,
 )
 from agent import run, run_stream, make_chart, distill_memory, fast_answer
 from data_layer import steam_client
 from data_layer import storage
 from data_layer import cache
 from data_layer import db
-from data_layer.library import build_library, header_stats
+from data_layer.library import build_library, header_stats, next_plan
 
 import time
 from data_layer.resolver import resolve_steam_id, SteamResolveError
@@ -59,11 +61,28 @@ _MEMORY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="memory")
 _STEAM_ID64_RE = re.compile(r"^\d{17}$")
 
 
+def is_demo(steam_id: Optional[str]) -> bool:
+    return bool(DEMO_STEAM_ID) and steam_id == DEMO_ALIAS
+
+
 def _sid(steam_id: str) -> str:
-    """Validate a client-supplied SteamID64 or 400. Returns it unchanged."""
+    """Validate a client-supplied SteamID64 (or the demo alias) and return the id
+    to USE server-side. The demo alias maps to DEMO_STEAM_ID here so the real
+    account never has to appear in the browser, the URL or the network tab."""
+    if is_demo(steam_id):
+        return DEMO_STEAM_ID
     if not isinstance(steam_id, str) or not _STEAM_ID64_RE.match(steam_id):
         raise HTTPException(status_code=400, detail="Invalid Steam ID (expected a 17-digit SteamID64).")
     return steam_id
+
+
+def _anonymize(summary: dict, steam_id: Optional[str]) -> dict:
+    """Strip the demo profile's identity from anything we send to a browser."""
+    if not is_demo(steam_id):
+        return summary
+    out = dict(summary)
+    out.update(steam_id=DEMO_ALIAS, persona=DEMO_DISPLAY_NAME, avatar="")
+    return out
 
 
 _CHARTS_DIR = Path(__file__).parent.parent / "data" / "charts"
@@ -141,6 +160,7 @@ _RATE_RULES = {
     "/library": ("library", [("min", 60, RATE_LIMIT_READ_PER_MIN)]),
     "/popular": ("popular", [("min", 60, RATE_LIMIT_READ_PER_MIN)]),
     "/memory": ("memory", [("min", 60, RATE_LIMIT_READ_PER_MIN)]),
+    "/demo/plan": ("demo_plan", [("min", 60, RATE_LIMIT_READ_PER_MIN)]),
 }
 
 
@@ -195,10 +215,14 @@ def _chart_url(path: Optional[str]) -> Optional[str]:
     return f"/charts/{name}"
 
 
-def _serialize(result: dict) -> dict:
-    """Strip heavy/internal fields and turn a local chart_path into a chart_url."""
+def _serialize(result: dict, demo: bool = False) -> dict:
+    """Strip heavy/internal fields and turn a local chart_path into a chart_url.
+    For the public demo, the real SteamID is replaced by the alias so it never
+    reaches a browser (the result echo is posted back to /chart)."""
     out = {k: v for k, v in result.items() if k not in _DROP_FIELDS}
     out["chart_url"] = _chart_url(out.pop("chart_path", None))
+    if demo and out.get("steam_id"):
+        out["steam_id"] = DEMO_ALIAS
     return out
 
 
@@ -235,15 +259,19 @@ def _memory_fingerprint(memory: str) -> str:
     return hashlib.sha1("|".join(lines).encode()).hexdigest()[:12]
 
 
-def _answer_cache_key(req: "AskReq", memory: str) -> Optional[str]:
+def _answer_cache_key(req: "AskReq", memory: str, steam_id: Optional[str] = None) -> Optional[str]:
     """Cache key, or None when this request shouldn't touch the cache: caching is
     disabled, it's a follow-up (history changes the answer), or the snapshot has
     no local build marker yet. The memory FINGERPRINT (not its text) is hashed in,
     so a personalization change misses but a reworded one doesn't (23.6g)."""
     if ANSWER_CACHE_TTL_SECONDS <= 0 or req.history:
         return None
-    sid = req.steam_id or "default"
-    ver = snapshot_version(req.steam_id) if req.steam_id else snapshot_version()
+    # `steam_id` is the RESOLVED id (the demo alias maps to a real one) — keying
+    # on the alias would look up a snapshot that doesn't exist and silently
+    # disable caching for exactly the traffic it's meant to subsidize.
+    resolved = steam_id or req.steam_id
+    sid = resolved or "default"
+    ver = snapshot_version(resolved) if resolved else snapshot_version()
     if not ver:
         return None
     h = hashlib.sha1(
@@ -310,6 +338,25 @@ class AskReq(BaseModel):
         return out
 
 
+def _demo_quota_ok() -> bool:
+    """Shared daily budget for AGENT questions asked from the public demo (20.0a).
+    Cached + fast-path answers never reach here, so only genuinely new questions
+    spend it. 0 disables the cap."""
+    if DEMO_ASK_PER_DAY <= 0:
+        return True
+    return cache.incr("demo:ask:day", 86400) <= DEMO_ASK_PER_DAY
+
+
+_DEMO_LIMIT_MSG = ("The demo has answered its questions for today — sign in through Steam "
+                   "to ask about your own library (no limit).")
+
+
+def _resolve_ask(req: AskReq) -> tuple[str, bool]:
+    """(server-side steam_id, is_demo) for an /ask request."""
+    demo = is_demo(req.steam_id)
+    return (DEMO_STEAM_ID if demo else req.steam_id), demo
+
+
 def _check_question(req: AskReq) -> None:
     """Reject a bad steam_id or an empty / over-long question with a readable 400
     (a pydantic 422 carries a detail LIST, which the frontend can't display)."""
@@ -341,7 +388,8 @@ def health(request: Request, debug: int = 0):
     """Cheap liveness for the platform's frequent health checks. Pass ?debug=1 for
     a live cache round-trip + the client IP this host sees (diagnostics) — kept off
     by default so routine checks don't burn the Upstash command quota."""
-    out = {"status": "ok", "missing_secrets": missing_secrets()}
+    # `demo` tells the landing page whether the "Try the demo" button is live.
+    out = {"status": "ok", "missing_secrets": missing_secrets(), "demo": bool(DEMO_STEAM_ID)}
     if debug:
         redis_ok = None
         if cache.using_redis():
@@ -392,8 +440,52 @@ def steam_return(request: Request):
     except requests.RequestException:
         steam_id = None
     if steam_id:
-        return RedirectResponse(f"{FRONTEND_URL}/?steam_id={steam_id}")
+        # Hand the frontend a signed token for the id Steam just verified (23.4b).
+        token = issue_auth_token(steam_id)
+        suffix = f"&auth={urllib.parse.quote(token)}" if token else ""
+        return RedirectResponse(f"{FRONTEND_URL}/?steam_id={steam_id}{suffix}")
     return RedirectResponse(f"{FRONTEND_URL}/?login_error=1")
+
+
+# ── Verified identity (23.4b) ─────────────────────────────────────────────────
+# Steam OpenID proves a SteamID64. We mint a signed, expiring token for it and
+# the frontend sends it back as X-Hundo-Auth. It gates MEMORY only: everything
+# else here is public Steam data that anyone may request for any id. Without a
+# valid token the agent still answers — it just doesn't read or write the
+# per-user memory, so a stranger can't poison or wipe what we remember about you.
+
+_AUTH_HEADER = "x-hundo-auth"
+
+
+def issue_auth_token(steam_id: str) -> str:
+    """Sign `steam_id` with an expiry. Empty string when no secret is configured."""
+    if not AUTH_SECRET:
+        return ""
+    exp = int(time.time() + AUTH_TOKEN_TTL_DAYS * 86400)
+    body = f"{steam_id}.{exp}"
+    sig = hmac.new(AUTH_SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{body}.{sig}"
+
+
+def verified_steam_id(request: Request) -> Optional[str]:
+    """The SteamID64 this request PROVED it owns, or None. Constant-time compare."""
+    token = request.headers.get(_AUTH_HEADER, "")
+    if not (token and AUTH_SECRET):
+        return None
+    try:
+        sid, exp_s, sig = token.rsplit(".", 2)
+        if int(exp_s) < time.time():
+            return None
+    except ValueError:
+        return None
+    expect = hmac.new(AUTH_SECRET.encode(), f"{sid}.{exp_s}".encode(),
+                      hashlib.sha256).hexdigest()[:32]
+    return sid if hmac.compare_digest(expect, sig) and _STEAM_ID64_RE.match(sid) else None
+
+
+def _memory_allowed(request: Request, steam_id: Optional[str]) -> bool:
+    """True when this caller PROVED it owns `steam_id` (so memory may be used)."""
+    return bool(steam_id) and verified_steam_id(request) == steam_id
 
 
 # ── Async snapshot build (Step 15.4) ──────────────────────────────────────────
@@ -513,11 +605,15 @@ def session(req: SessionReq):
     then polls /session/status. Resolution stays synchronous (one fast Steam call)."""
     _sweep_charts()      # opportunistic cleanup so long-running servers stay bounded
     _sweep_snapshots()   # GC snapshots not rebuilt in SNAPSHOT_TTL_DAYS (DB-driven)
-    try:
-        steam_id = resolve_steam_id(req.profile)
-    except SteamResolveError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    _sid(steam_id)   # resolver output reaches paths/keys — never trust it blindly
+    demo = is_demo(req.profile)
+    if demo:
+        steam_id = DEMO_STEAM_ID          # alias → real id, server-side only
+    else:
+        try:
+            steam_id = resolve_steam_id(req.profile)
+        except SteamResolveError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        _sid(steam_id)   # resolver output reaches paths/keys — never trust it blindly
 
     if has_snapshot(steam_id):
         cache.set(_status_key(steam_id), "ready", _STATUS_TTL)
@@ -526,7 +622,7 @@ def session(req: SessionReq):
         # Stale snapshot → serve it NOW and refresh behind the scenes (23.3b).
         if summ.get("stale"):
             summ["refreshing"] = _refresh_in_background(steam_id)
-        return {"status": "ready", **summ}
+        return {"status": "ready", **_anonymize(summ, req.profile)}
 
     # Not built yet → record identity, then check privacy UP-FRONT with one Steam
     # call (reused by the build): a private profile fails instantly with the real
@@ -549,7 +645,7 @@ def session(req: SessionReq):
     cache.set(_status_key(steam_id), "building", _STATUS_TTL)
     cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
     _BUILD_POOL.submit(_run_build, steam_id, owned)
-    return {"status": "building", "steam_id": steam_id}
+    return {"status": "building", "steam_id": DEMO_ALIAS if demo else steam_id}
 
 
 @app.post("/session/refresh")
@@ -567,10 +663,15 @@ def session_refresh(req: "RefreshReq"):
 def library(steam_id: str):
     """The full trophy-case dataset (profile, cards, games, curator highlights) for
     a built profile. Read-only transform over the snapshot — see data_layer/library."""
-    _sid(steam_id)
+    alias, steam_id = steam_id, _sid(steam_id)
     if not has_snapshot(steam_id):
         raise HTTPException(status_code=404, detail="No snapshot yet — load the profile first.")
     lib = build_library(steam_id)
+    if is_demo(alias):
+        # Demo: keep the real library (that's the point) but not the identity.
+        lib["profile"]["name"] = DEMO_DISPLAY_NAME
+        lib["profile"]["avatar"] = ""
+        return lib
     try:
         s = steam_client.get_player_summary(steam_id)
         lib["profile"]["name"] = s.get("personaname", "") or steam_id
@@ -580,12 +681,38 @@ def library(steam_id: str):
     return lib
 
 
+DEMO_PLAN_TTL = 6 * 3600  # the demo snapshot only changes on its weekly rebuild
+
+
+@app.get("/demo/plan")
+def demo_plan():
+    """The landing page's hero plan, computed from the demo library (17.12). The
+    page renders a frozen copy instantly and swaps this in when it arrives, so a
+    sleeping server costs nothing. Cached per snapshot version; names, descriptions
+    and rarity only — the demo identity never appears."""
+    if not DEMO_STEAM_ID or not has_snapshot(DEMO_STEAM_ID):
+        raise HTTPException(status_code=404, detail="No demo library configured.")
+    key = f"demo:plan:{snapshot_version(DEMO_STEAM_ID)}"
+    cached = cache.get(key)
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception:
+            pass
+    plan = next_plan(build_library(DEMO_STEAM_ID))
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Nothing left to plan in the demo library.")
+    plan["built_at"] = snapshot_meta(DEMO_STEAM_ID).get("built_at")
+    cache.set(key, json.dumps(plan), DEMO_PLAN_TTL)
+    return plan
+
+
 @app.get("/popular")
 def popular(steam_id: str):
     """Currently most-played Steam games the user does NOT own — discovery picks for
     a fresh 100% (the unowned-roadmap path handles these). appdetails are cached
     per-app (shared across users) so this stays cheap."""
-    _sid(steam_id)
+    steam_id = _sid(steam_id)
     from agent.search import cached_json
     owned: set[int] = set()
     if has_snapshot(steam_id):
@@ -613,11 +740,11 @@ def popular(steam_id: str):
 def session_status(steam_id: str):
     """Poll a build's progress. Returns ready (+ summary), building (+ progress),
     or failed (+ error). Cheap + fast — safe to poll every ~1.5s."""
-    _sid(steam_id)
+    alias, steam_id = steam_id, _sid(steam_id)
     if has_snapshot(steam_id):
         summ = _session_summary(steam_id)
         db.upsert_user(steam_id, persona=summ["persona"], avatar=summ["avatar"])
-        return {"status": "ready", **summ}
+        return {"status": "ready", **_anonymize(summ, alias)}
 
     status = cache.get(_status_key(steam_id)) or ""
     if status.startswith("failed:"):
@@ -673,56 +800,70 @@ def _update_memory_bg(steam_id: Optional[str], question: str, answer: Optional[s
 
 
 @app.get("/memory")
-def memory_get(steam_id: str):
-    """What the agent remembers about this user (for transparency)."""
-    _sid(steam_id)
-    return {"memory": db.get_memory(steam_id)}
+def memory_get(steam_id: str, request: Request):
+    """What the agent remembers about this user (for transparency). Readable ONLY
+    by a caller that signed in through Steam as this id — memory is derived from
+    someone's conversations, so a public SteamID must not expose it (23.4b)."""
+    steam_id = _sid(steam_id)
+    if not _memory_allowed(request, steam_id):
+        return {"memory": "", "verified": False}
+    return {"memory": db.get_memory(steam_id), "verified": True}
 
 
 @app.delete("/memory")
-def memory_delete(steam_id: str):
-    """Wipe this user's remembered memory."""
-    _sid(steam_id)
+def memory_delete(steam_id: str, request: Request):
+    """Wipe this user's remembered memory (verified owner only)."""
+    steam_id = _sid(steam_id)
+    if not _memory_allowed(request, steam_id):
+        raise HTTPException(status_code=403, detail=(
+            "Sign in through Steam to manage what Hundo remembers about this profile."))
     db.delete_memory(steam_id)
     return {"ok": True}
 
 
 @app.post("/ask")
-def ask(req: AskReq):
+def ask(req: AskReq, request: Request):
     """Answer a question. Returns the agent result (answer, route, trace fields,
     chart_url or chart_pending). For chart_pending answers, the client then calls
     /chart with this same result (answer-first UX)."""
     _check_question(req)
     t0 = time.perf_counter()
+    sid, demo = _resolve_ask(req)
     # Deterministic fast-path (19.3): common shapes answered straight from the
     # snapshot — no LLM, no memory read/update (nothing durable to distill).
-    fast = fast_answer(req.question, req.steam_id)
+    fast = fast_answer(req.question, sid)
     if fast:
-        db.log_query(req.steam_id, req.question, fast.get("route"),
+        db.log_query(sid, req.question, fast.get("route"),
                      int((time.perf_counter() - t0) * 1000))
-        return _serialize(fast)
-    mem = _memory_for(req.steam_id)
+        return _serialize(fast, demo)
+    # Memory is read/written ONLY for a caller that proved this identity via Steam
+    # OpenID (23.4b) — otherwise anyone could poison or read it via a public id.
+    mem_ok = _memory_allowed(request, sid) and not demo
+    mem = _memory_for(sid) if mem_ok else ""
     # Answer cache (19.4): a repeat of a cached question skips the agent entirely.
-    ckey = _answer_cache_key(req, mem)
+    ckey = _answer_cache_key(req, mem, sid)
     hit = _answer_cache_get(ckey)
     if hit:
-        db.log_query(req.steam_id, req.question, f"cached:{hit.get('route') or ''}",
+        db.log_query(sid, req.question, f"cached:{hit.get('route') or ''}",
                      int((time.perf_counter() - t0) * 1000))
         # No distill on a cache hit: the exchange is a repeat, so there is nothing
         # new to remember — and rewriting memory here would invalidate the very
         # cache entry we just served (23.6g).
         return hit
+    if demo and not _demo_quota_ok():
+        raise HTTPException(status_code=429, detail=_DEMO_LIMIT_MSG)
     result = run(
         req.question,
-        steam_id=req.steam_id,
+        steam_id=sid,
         history=req.history,
         with_insight=req.with_insight,
         memory=mem,
     )
-    db.log_query(req.steam_id, req.question, result.get("route"),
+    db.log_query(sid, req.question, result.get("route"),
                  int((time.perf_counter() - t0) * 1000), usage=result.get("llm_usage"))
-    _update_memory_bg(req.steam_id, req.question, result.get("answer"), mem)
-    out = _serialize(result)
+    if mem_ok:
+        _update_memory_bg(sid, req.question, result.get("answer"), mem)
+    out = _serialize(result, demo)
     _answer_cache_put(ckey, out)
     return out
 
@@ -732,33 +873,38 @@ def _sse(event: str, data: dict) -> str:
 
 
 @app.post("/ask/stream")
-def ask_stream(req: AskReq):
+def ask_stream(req: AskReq, request: Request):
     """Streaming variant of /ask (Server-Sent Events). Emits `progress` events as
     each agent node fires, then a final `result` event with the serialized payload.
     The client reads this as a stream (fetch + ReadableStream)."""
     _check_question(req)   # before the stream opens → a normal 400, not a broken SSE
     def gen():
         t0 = time.perf_counter()
+        sid, demo = _resolve_ask(req)
         # Deterministic fast-path (19.3): instant single result event, no LLM.
-        fast = fast_answer(req.question, req.steam_id)
+        fast = fast_answer(req.question, sid)
         if fast:
-            db.log_query(req.steam_id, req.question, fast.get("route"),
+            db.log_query(sid, req.question, fast.get("route"),
                          int((time.perf_counter() - t0) * 1000))
-            yield _sse("result", _serialize(fast))
+            yield _sse("result", _serialize(fast, demo))
             return
-        mem = _memory_for(req.steam_id)
+        mem_ok = _memory_allowed(request, sid) and not demo
+        mem = _memory_for(sid) if mem_ok else ""
         # Answer cache (19.4): a hit is a single instant result event, no agent.
-        ckey = _answer_cache_key(req, mem)
+        ckey = _answer_cache_key(req, mem, sid)
         hit = _answer_cache_get(ckey)
         if hit:
-            db.log_query(req.steam_id, req.question, f"cached:{hit.get('route') or ''}",
+            db.log_query(sid, req.question, f"cached:{hit.get('route') or ''}",
                          int((time.perf_counter() - t0) * 1000))
             # No distill on a cache hit (23.6g) — see /ask.
             yield _sse("result", hit)
             return
+        if demo and not _demo_quota_ok():
+            yield _sse("result", {"answer": f"⚠️ {_DEMO_LIMIT_MSG}", "done": True})
+            return
         for kind, payload in run_stream(
             req.question,
-            steam_id=req.steam_id,
+            steam_id=sid,
             history=req.history,
             with_insight=req.with_insight,
             memory=mem,
@@ -768,11 +914,12 @@ def ask_stream(req: AskReq):
             elif kind == "token":
                 yield _sse("token", {"text": payload})
             else:
-                db.log_query(req.steam_id, req.question, payload.get("route"),
+                db.log_query(sid, req.question, payload.get("route"),
                              int((time.perf_counter() - t0) * 1000),
                              usage=payload.get("llm_usage"))
-                _update_memory_bg(req.steam_id, req.question, payload.get("answer"), mem)
-                out = _serialize(payload)
+                if mem_ok:
+                    _update_memory_bg(sid, req.question, payload.get("answer"), mem)
+                out = _serialize(payload, demo)
                 _answer_cache_put(ckey, out)
                 yield _sse("result", out)
 
@@ -789,7 +936,8 @@ def chart(req: ChartReq):
     if len(json.dumps(req.result, default=str)) > _MAX_CHART_RESULT_BYTES:
         raise HTTPException(status_code=413, detail="Chart request too large.")
     if req.result.get("steam_id") is not None:
-        _sid(req.result["steam_id"])
+        # Map the demo alias back to the real id so the chart can load frames.
+        req.result["steam_id"] = _sid(req.result["steam_id"])
     return {"chart_spec": make_chart(req.result), "chart_url": None}
 
 

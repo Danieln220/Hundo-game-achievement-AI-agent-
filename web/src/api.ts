@@ -9,7 +9,31 @@ import type {
 
 // Strip any trailing slash so `BASE + "/session"` never becomes "…//session"
 // (a double slash 404s on FastAPI).
-const BASE = ((import.meta.env.VITE_API_URL as string) || "http://localhost:8000").replace(/\/+$/, "");
+const BASE = ((import.meta.env.VITE_API_URL as string) || "http://localhost:8000").trim().replace(/\/+$/, "");
+
+// ── Verified identity (23.4b) ───────────────────────────────────────────────
+// Steam OpenID bounces back with a SIGNED token for the id it verified. We keep
+// it per profile and send it as X-Hundo-Auth; the server gates MEMORY on it, so
+// a stranger who types your (public) SteamID can't read, poison or wipe it.
+// A token, not a cookie: the app and the API are different sites, so a cookie
+// would be third-party — blocked by default in Safari, increasingly in Chrome.
+const authKey = (steamId: string) => `hundo_auth_${steamId}`;
+
+export function saveAuthToken(steamId: string, token: string): void {
+  try { localStorage.setItem(authKey(steamId), token); } catch { /* private mode */ }
+}
+
+export function authToken(steamId?: string | null): string {
+  if (!steamId) return "";
+  try { return localStorage.getItem(authKey(steamId)) || ""; } catch { return ""; }
+}
+
+export const isVerified = (steamId?: string | null) => !!authToken(steamId);
+
+function authHeaders(steamId?: string | null): Record<string, string> {
+  const t = authToken(steamId);
+  return t ? { "X-Hundo-Auth": t } : {};
+}
 
 // Error that keeps the HTTP status, so callers can tell "server said no"
 // (404 profile, 429 rate limit) apart from "server isn't up yet".
@@ -92,9 +116,10 @@ export async function apiError(res: Response): Promise<ApiError> {
 }
 
 async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const sid = (body as { steam_id?: string } | null)?.steam_id;
   const res = await fetch(BASE + path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(sid) },
     body: JSON.stringify(body),
     signal,
   });
@@ -103,7 +128,8 @@ async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promi
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path);
+  const sid = new URLSearchParams(path.split("?")[1] || "").get("steam_id");
+  const res = await fetch(BASE + path, { headers: authHeaders(sid) });
   if (!res.ok) throw await apiError(res);
   return res.json() as Promise<T>;
 }
@@ -111,7 +137,11 @@ async function get<T>(path: string): Promise<T> {
 // Cheap liveness probe — used to warm/await the free-tier server. The Steam
 // sign-in is a full-page navigation to the API, so a sleeping server would show
 // Render's own error page; we only navigate once /health answers.
-export const health = () => get<{ status: string }>("/health");
+export const health = () => get<{ status: string; demo?: boolean }>("/health");
+
+// The public demo profile is addressed by this alias only — the API maps it to a
+// real SteamID server-side, so the underlying account never reaches the browser.
+export const DEMO_PROFILE = "demo";
 
 // Returns a ready summary immediately if the snapshot exists, else {status:"building"}.
 export const session = (profile: string) =>
@@ -138,15 +168,27 @@ export const getLibrary = (steamId: string) =>
   get<LibraryData>(`/library?steam_id=${encodeURIComponent(steamId)}`);
 
 // Currently most-played Steam games the user does NOT own (discovery).
+// The landing page's hero plan, computed from the demo library (17.12).
+export interface DemoPlanItem { name: string; desc: string; pct: number | null; hidden: boolean }
+export interface DemoPlan {
+  game: string; unlocked: number; total: number; pct: number; left: number;
+  locked: DemoPlanItem[]; meta: DemoPlanItem | null; built_at?: number | null;
+}
+export const demoPlan = () => get<DemoPlan>("/demo/plan");
+
 export const getPopular = (steamId: string) =>
   get<{ games: { appid: number; name: string }[] }>(`/popular?steam_id=${encodeURIComponent(steamId)}`);
 
 // Cross-session memory (Tier 2): what the agent remembers + a clear control.
 export const getMemory = (steamId: string) =>
-  get<{ memory: string }>(`/memory?steam_id=${encodeURIComponent(steamId)}`);
+  get<{ memory: string; verified?: boolean }>(`/memory?steam_id=${encodeURIComponent(steamId)}`);
 
 export async function clearMemory(steamId: string): Promise<void> {
-  await fetch(`${BASE}/memory?steam_id=${encodeURIComponent(steamId)}`, { method: "DELETE" });
+  const res = await fetch(`${BASE}/memory?steam_id=${encodeURIComponent(steamId)}`, {
+    method: "DELETE",
+    headers: authHeaders(steamId),
+  });
+  if (!res.ok) throw await apiError(res);
 }
 
 export const ask = (question: string, steam_id: string, history: Turn[]) =>
@@ -169,7 +211,7 @@ export async function askStream(
 ): Promise<AskResult> {
   const res = await fetch(BASE + "/ask/stream", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(steam_id) },
     body: JSON.stringify({ question, steam_id, history, with_insight: true }),
     signal,
   });

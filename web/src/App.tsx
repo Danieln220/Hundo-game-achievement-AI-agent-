@@ -1,5 +1,5 @@
 import { Component, useState, type ReactNode } from "react";
-import ProfileGate from "./components/ProfileGate";
+import Landing from "./components/Landing";
 import TrophyCase from "./components/TrophyCase";
 import type { SessionResult } from "./types";
 
@@ -45,14 +45,17 @@ function Backdrop() {
 
 export default function App() {
   const [session, setSession] = useState<SessionResult | null>(null);
+  // A question the landing page wants asked as soon as the case is open
+  // ("Get the guide" on the demo plan).
+  const [question, setQuestion] = useState<string | undefined>();
   return (
     <div className="app">
       <Backdrop />
       <ErrorBoundary>
         {session ? (
-          <TrophyCase session={session} onSignOut={() => setSession(null)} />
+          <TrophyCase session={session} initialQuestion={question} onSignOut={() => { setSession(null); setQuestion(undefined); }} />
         ) : (
-          <ProfileGate onLoaded={setSession} />
+          <Landing onLoaded={(s, q) => { setQuestion(q); setSession(s); }} />
         )}
       </ErrorBoundary>
     </div>

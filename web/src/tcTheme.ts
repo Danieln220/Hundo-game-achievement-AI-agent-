@@ -28,6 +28,9 @@ export const tierColor = (t: Tier) =>
 export const pctLabel = (pct: number | string | null | undefined) => {
   const n = pct == null ? NaN : Number(pct);
   if (Number.isNaN(n)) return "—";
+  // Below a tenth of a percent, "0.0%" reads as missing data rather than as the
+  // rarest thing in the case — state the floor instead.
+  if (n < 0.1) return "<0.1%";
   return (n < 5 ? n.toFixed(1) : Math.round(n)) + "%";
 };
 
