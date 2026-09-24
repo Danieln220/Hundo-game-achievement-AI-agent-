@@ -52,7 +52,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 # Bounded background work (23.2f): an unbounded Thread per request let a burst of
 # /session or /ask calls spawn arbitrarily many builds / Flash calls on a 512MB box.
-# Excess work QUEUES — a queued build still reports "building" to the poller.
+# Excess work QUEUES — a queued build reports queued:true to the poller, which
+# pauses its stall timer (a build waiting for a worker is not a stuck build).
 _BUILD_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="build")
 _MEMORY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="memory")
 
@@ -509,6 +510,29 @@ def _progress_key(sid: str) -> str:
     return f"snap:progress:{sid}"
 
 
+# Build status in the cache: "queued:<epoch>" → "building" → "ready" | "failed:<msg>".
+# "queued" = submitted to _BUILD_POOL but no worker has picked it up yet. It used
+# to be indistinguishable from a dead build (both "building 0/0"), so the client's
+# stall timer gave up on healthy builds that were just waiting (code review
+# 2026-09-24). The enqueue time rides along so a queue that never drains — the
+# process died, e.g. a redeploy — turns into a retry message, not an endless wait.
+def _queued_status() -> str:
+    return f"queued:{int(time.time())}"
+
+
+def _queued_at(status: str) -> Optional[float]:
+    if not status.startswith("queued"):
+        return None
+    try:
+        return float(status.split(":", 1)[1])
+    except (IndexError, ValueError):
+        return 0.0  # unparseable → treat as ancient → retry message
+
+
+def _in_flight(status: Optional[str]) -> bool:
+    return status == "building" or _queued_at(status or "") is not None
+
+
 def _session_summary(steam_id: str) -> dict:
     """Headline profile stats for the UI header (assumes the snapshot is ready)."""
     stats = header_stats(load_frames(steam_id))
@@ -535,9 +559,9 @@ def _refresh_in_background(steam_id: str) -> bool:
     snapshot keeps serving until the new one lands (stale-while-revalidate), so
     nothing blocks and a Steam outage can't take a working profile away. Returns
     False when a build is already running for this user."""
-    if cache.get(_status_key(steam_id)) == "building":
+    if _in_flight(cache.get(_status_key(steam_id))):
         return False
-    cache.set(_status_key(steam_id), "building", _STATUS_TTL)
+    cache.set(_status_key(steam_id), _queued_status(), _STATUS_TTL)
     _BUILD_POOL.submit(_run_build, steam_id, None, True)
     return True
 
@@ -545,10 +569,14 @@ def _refresh_in_background(steam_id: str) -> bool:
 def _run_build(steam_id: str, owned: Optional[dict] = None, force: bool = False) -> None:
     """Background worker: build the snapshot, writing progress to the cache. The
     build-lock inside ensure_snapshot dedupes concurrent builds for the same user.
-    Status is mirrored to the DB row (building → ready/failed) so it is visible
-    even when Redis is unavailable (2026-09-15 incident)."""
+    Status is mirrored to the DB row (queued → building → ready/failed) so it is
+    visible even when Redis is unavailable (2026-09-15 incident)."""
+    # A worker picked it up: no longer queued. The DB row only tracks FIRST builds
+    # (a refresh keeps the previous good row until it finishes).
     cache.set(_status_key(steam_id), "building", _STATUS_TTL)
     cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
+    if not force:
+        db.upsert_snapshot(steam_id, status="building")
 
     def cb(done: int, total: int) -> None:
         cache.set(_progress_key(steam_id), f"{done}/{total}", _STATUS_TTL)
@@ -647,11 +675,12 @@ def session(req: SessionReq):
         db.upsert_snapshot(steam_id, status="failed", error=PRIVATE_PROFILE_MSG)
         raise HTTPException(status_code=403, detail=PRIVATE_PROFILE_MSG)
 
-    # Launch the background build and tell the client to poll. The DB row is
+    # Launch the background build and tell the client to poll. It starts QUEUED
+    # (the worker flips it to "building" when it picks it up). The DB row is
     # written SYNCHRONOUSLY here (not in the thread) so the very first poll can
-    # already see "building" even if the cache is unavailable.
-    db.upsert_snapshot(steam_id, status="building")
-    cache.set(_status_key(steam_id), "building", _STATUS_TTL)
+    # already see it even if the cache is unavailable.
+    db.upsert_snapshot(steam_id, status="queued")
+    cache.set(_status_key(steam_id), _queued_status(), _STATUS_TTL)
     cache.set(_progress_key(steam_id), "0/0", _STATUS_TTL)
     _BUILD_POOL.submit(_run_build, steam_id, owned)
     return {"status": "building", "steam_id": DEMO_ALIAS if demo else steam_id}

@@ -154,6 +154,16 @@ function startCaseField(canvas: HTMLCanvasElement): () => void {
   return () => { stopped = true; cancelAnimationFrame(raf); window.removeEventListener("pointermove", onMove); };
 }
 
+// "Get the guide" / "Ask it yourself": a button into the demo with the question
+// pre-filled, or plain text when the demo is off. Module-level on purpose: a
+// component defined inside Landing's render is a NEW type on every render, so
+// React remounted each of these (dropping keyboard focus) whenever Landing did.
+function AskLink({ q, onAsk, children }: { q: string; onAsk?: (q: string) => void; children: React.ReactNode }) {
+  return onAsk
+    ? <button className="landing-ask" onClick={() => onAsk(q)}>{children}</button>
+    : <span className="landing-ask landing-ask-off">{children}</span>;
+}
+
 export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, question?: string) => void }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -171,20 +181,29 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
     return () => io.disconnect();
   }, []);
 
-  // The sleeve field sizes itself to the page and restarts on resize.
+  // The sleeve field sizes itself to the page's WIDTH (its height derives from
+  // it) and restarts only when that changes. Height-only resizes — a phone's
+  // browser toolbar showing/hiding while scrolling — used to restart it too,
+  // which clears the canvas and resets its drift: a visible flicker.
   useEffect(() => {
     const canvas = canvasRef.current, root = rootRef.current;
     if (!canvas || !root) return;
     let stop = () => {};
     let timer = 0;
+    let width = 0;
     const start = () => {
       stop();
-      canvas.width = Math.max(320, root.clientWidth);
+      width = root.clientWidth;
+      canvas.width = Math.max(320, width);
       canvas.height = Math.min(1040, Math.round(canvas.width * 0.72) + 300);
       stop = startCaseField(canvas);
     };
     start();
-    const onResize = () => { window.clearTimeout(timer); timer = window.setTimeout(start, 200); };
+    const onResize = () => {
+      if (root.clientWidth === width) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(start, 200);
+    };
     window.addEventListener("resize", onResize);
     return () => { stop(); window.clearTimeout(timer); window.removeEventListener("resize", onResize); };
   }, []);
@@ -232,8 +251,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
     e.preventDefault();
     toGate({ steam: true });
   }
-  const AskLink = ({ q, children }: { q: string; children: React.ReactNode }) =>
-    demoOn ? <button className="landing-ask" onClick={() => askDemo(q)}>{children}</button> : <span className="landing-ask landing-ask-off">{children}</span>;
+  const onAsk = demoOn ? askDemo : undefined;
 
   return (
     <div className="landing" ref={rootRef}>
@@ -283,21 +301,27 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
               <span className="landing-plan-meta">{plan.pct}% — the closest game to 100% in this library</span>
             </div>
             <span className="landing-label landing-label-quick">Quick wins · chase these first</span>
+            {/* Keyed by position: a game can have two achievements with the same
+                display name, and the live-plan swap then updates rows in place
+                instead of remounting them (which would replay their entrance). */}
             {quick.map((a, i) => (
-              <div key={a.name} className="landing-plan-row lr" style={d(1.3 + i * 0.15)}>
+              <div key={i} className="landing-plan-row lr" style={d(1.3 + i * 0.15)}>
                 <span className="landing-check" aria-hidden="true" />
                 <span className="landing-plan-text"><b>{a.name}</b><small>{a.desc || (a.hidden ? "Hidden — the guide reveals the steps." : "")}</small></span>
                 <span className="landing-plan-side">
                   <span className={`landing-chip landing-chip-${tierOf(a.pct)}`}>{pctLabel(a.pct)}</span>
-                  <AskLink q={`How do I unlock "${a.name}" in ${plan.game}?`}>Get the guide</AskLink>
+                  <AskLink onAsk={onAsk} q={`How do I unlock "${a.name}" in ${plan.game}?`}>Get the guide</AskLink>
                 </span>
               </div>
             ))}
             <span className="landing-label landing-label-grind lr" style={d(1.8)}>Then the grind</span>
             <div className="landing-plan-grind lr" style={d(1.9)}>
-              {grind.map((g) => (
-                <span key={g.name} className={g.hidden ? "muted" : ""}><span>{g.name} <i>· {g.hidden ? "hidden — the guide reveals it" : g.desc.replace(/\.$/, "")}</i></span><span className={`landing-t-${tierOf(g.pct)}`}>{pctLabel(g.pct)}</span></span>
-              ))}
+              {grind.map((g, i) => {
+                const note = g.hidden ? "hidden — the guide reveals it" : g.desc.replace(/\.$/, "");
+                return (
+                  <span key={i} className={g.hidden ? "muted" : ""}><span>{g.name}{note && <> <i>· {note}</i></>}</span><span className={`landing-t-${tierOf(g.pct)}`}>{pctLabel(g.pct)}</span></span>
+                );
+              })}
               {plan.meta && (
                 <span className="muted"><span>{plan.meta.name} <i>· unlocks with the rest</i></span><span className={`landing-t-${tierOf(plan.meta.pct)}`}>{pctLabel(plan.meta.pct)}</span></span>
               )}
@@ -323,7 +347,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
               <span className="q hd-type" style={{ ...d(2.5), ["--steps" as string]: 30 } as React.CSSProperties}>&gt; and the easiest one anywhere?</span>
               <span className="a lr" style={d(3.6)}>Elite Slayer · Risk of Rain 2 · 90.7% of players have it</span>
             </div>
-            <AskLink q="What am I closest to finishing?">Ask it yourself →</AskLink>
+            <AskLink onAsk={onAsk} q="What am I closest to finishing?">Ask it yourself →</AskLink>
           </article>
           <article className="landing-card lr" style={d(0.42)}>
             <span className="landing-label">Where you stalled</span>
@@ -332,7 +356,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
             <div className="landing-rows">
               {STALLED.map(([g, p]) => <span key={g}><b>{g}</b><span>{p}</span></span>)}
             </div>
-            <AskLink q="Which games did I leave half-done?">Ask it yourself →</AskLink>
+            <AskLink onAsk={onAsk} q="Which games did I leave half-done?">Ask it yourself →</AskLink>
           </article>
           <article className="landing-card lr" style={d(0.54)}>
             <span className="landing-label">When you're stuck</span>
@@ -343,7 +367,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
               <span className="a">Only the Finest · 8.5% · "Make 5 full-course meals."</span>
               <span className="s"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5be0d0" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>guide found — steps with 3 sources</span>
             </div>
-            <AskLink q={`How do I unlock "Only the Finest" in Dragon Ball Z: Kakarot?`}>Ask it yourself →</AskLink>
+            <AskLink onAsk={onAsk} q={`How do I unlock "Only the Finest" in Dragon Ball Z: Kakarot?`}>Ask it yourself →</AskLink>
           </article>
         </div>
       </section>
