@@ -189,8 +189,6 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
     return () => { stop(); window.clearTimeout(timer); window.removeEventListener("resize", onResize); };
   }, []);
 
-  // "Get the guide" / the example questions enter the demo with that question
-  // pre-filled — the gate does the loading, the question rides along.
   // The ONE /health probe for the page: it warms the free-tier server while the
   // visitor reads, and says whether the demo is configured. The demo controls
   // show from first paint (a cold start must not hide the primary CTA) and only
@@ -215,11 +213,12 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
   }, []);
   const quick = plan.locked.slice(0, QUICK_N), grind = plan.locked.slice(QUICK_N);
   const updated = agoLabel(plan.built_at);
-  const question = useRef<string | undefined>(undefined);
-  const [request, setRequest] = useState<{ profile: string; nonce: number } | undefined>();
+  // "Get the guide" / the example questions enter the demo with that question
+  // pre-filled. The question rides INSIDE the request, so the gate hands it back
+  // only with the demo load that request started — never with another profile.
+  const [request, setRequest] = useState<{ profile: string; nonce: number; question: string } | undefined>();
   function askDemo(q: string) {
-    question.current = q;
-    setRequest((r) => ({ profile: DEMO_PROFILE, nonce: (r?.nonce ?? 0) + 1 }));
+    setRequest((r) => ({ profile: DEMO_PROFILE, nonce: (r?.nonce ?? 0) + 1, question: q }));
     document.getElementById("top")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   const AskLink = ({ q, children }: { q: string; children: React.ReactNode }) =>
@@ -255,7 +254,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
           <h1 className="landing-h1 lr" style={d(0.18)}>Know your <em>next</em><br />achievement —<br />and how to get it.</h1>
           <p className="landing-sub lr" style={d(0.3)}>Hundo reads your public Steam library, works out what's left in each game, orders it easiest-first, and pulls the guide when you're stuck. Ask it anything — it computes the answer from your own data instead of guessing.</p>
           <div className="landing-gate lr" style={d(0.42)}>
-            <ProfileGate onLoaded={(s) => onLoaded(s, question.current)} demoOn={demoOn} request={request} />
+            <ProfileGate onLoaded={onLoaded} demoOn={demoOn} request={request} />
           </div>
         </div>
 

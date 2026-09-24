@@ -11,6 +11,7 @@ eval/last_run.json
 CLAUDE.md
 web/node_modules/
 web/dist/
+*.tsbuildinfo
 PROJECT_SUMMARY.md
 web/skills/
 hundo-codebase

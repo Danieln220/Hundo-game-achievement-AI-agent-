@@ -20,13 +20,14 @@ export default function ProfileGate({
   demoOn,
   request,
 }: {
-  onLoaded: (session: SessionResult) => void;
+  // `question` is only ever the one that came with `request` — see load().
+  onLoaded: (session: SessionResult, question?: string) => void;
   // Whether the public demo profile is configured. The landing page owns the one
   // /health probe that answers this (it also warms the free-tier server).
   demoOn: boolean;
   // A parent can ask the gate to load a profile (the landing page's "Get the
-  // guide" buttons enter the demo). A new nonce = a new request.
-  request?: { profile: string; nonce: number };
+  // guide" buttons enter the demo with a question). A new nonce = a new request.
+  request?: { profile: string; nonce: number; question?: string };
 }) {
   const [value, setValue] = useState("");
   const [loading, setLoading] = useState(false);
@@ -57,7 +58,7 @@ export default function ProfileGate({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { if (request) load(request.profile); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (request) load(request.profile, request.question); // eslint-disable-line react-hooks/exhaustive-deps
   }, [request?.nonce]);
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -87,7 +88,11 @@ export default function ProfileGate({
     }
   }
 
-  async function load(profile?: string) {
+  // `question` belongs to THIS load only: it is handed back with this load's
+  // result and dies with it. A request dropped because another load is running,
+  // or a load that fails, can't leak its question into a later, different load
+  // (code review 2026-09-24: the demo question was asked of the user's library).
+  async function load(profile?: string, question?: string) {
     const p = (profile ?? value).trim();
     if (!p || loading) return;
     cancelled.current = false;
@@ -98,7 +103,7 @@ export default function ProfileGate({
       const r = await withWake(() => session(p));
       if (r === undefined) return; // unmounted mid-wait
       if (r.status === "ready") {
-        onLoaded(r); // cached snapshot — straight in
+        onLoaded(r, question); // cached snapshot — straight in
         return;
       }
       // Building in the background — poll for live progress until ready/failed.
@@ -127,7 +132,7 @@ export default function ProfileGate({
         }
         if (cancelled.current) return;
         if (st.status === "ready") {
-          onLoaded(st);
+          onLoaded(st, question);
           return;
         }
         if (st.status === "failed") {
