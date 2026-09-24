@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import ProfileGate from "./ProfileGate";
-import { DEMO_PROFILE, demoPlan, health, steamLoginUrl, type DemoPlan } from "../api";
+import { DEMO_PROFILE, demoPlan, health, steamLoginUrl, withWake, type DemoPlan } from "../api";
 import { tierOf, pctLabel } from "../tcTheme";
 import type { SessionResult } from "../types";
 
@@ -191,8 +191,20 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
 
   // "Get the guide" / the example questions enter the demo with that question
   // pre-filled — the gate does the loading, the question rides along.
+  // The ONE /health probe for the page: it warms the free-tier server while the
+  // visitor reads, and says whether the demo is configured. The demo controls
+  // show from first paint (a cold start must not hide the primary CTA) and only
+  // disappear on an explicit demo=false; withWake rides out the cold start so a
+  // single failed request doesn't decide it for the whole visit. If the demo is
+  // off, a click still gets a clear message from /session instead of a profile.
   const [demoOn, setDemoOn] = useState(true);
-  useEffect(() => { health().then((h) => setDemoOn(!!h.demo)).catch(() => {}); }, []);
+  useEffect(() => {
+    let alive = true;
+    withWake(() => health(), undefined, () => !alive)
+      .then((h) => { if (alive && h) setDemoOn(!!h.demo); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   // Stale-while-revalidate for the hero: the frozen plan paints at once; the
   // live one replaces it in place when the API answers. A failure changes nothing.
   const [plan, setPlan] = useState<DemoPlan>(PLAN);
@@ -243,7 +255,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
           <h1 className="landing-h1 lr" style={d(0.18)}>Know your <em>next</em><br />achievement —<br />and how to get it.</h1>
           <p className="landing-sub lr" style={d(0.3)}>Hundo reads your public Steam library, works out what's left in each game, orders it easiest-first, and pulls the guide when you're stuck. Ask it anything — it computes the answer from your own data instead of guessing.</p>
           <div className="landing-gate lr" style={d(0.42)}>
-            <ProfileGate onLoaded={(s) => onLoaded(s, question.current)} compact coach request={request} />
+            <ProfileGate onLoaded={(s) => onLoaded(s, question.current)} demoOn={demoOn} request={request} />
           </div>
         </div>
 

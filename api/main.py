@@ -65,6 +65,10 @@ def is_demo(steam_id: Optional[str]) -> bool:
     return bool(DEMO_STEAM_ID) and steam_id == DEMO_ALIAS
 
 
+DEMO_OFF_MSG = ("The demo isn't available right now — sign in through Steam or "
+                "paste your profile link instead.")
+
+
 def _sid(steam_id: str) -> str:
     """Validate a client-supplied SteamID64 (or the demo alias) and return the id
     to USE server-side. The demo alias maps to DEMO_STEAM_ID here so the real
@@ -603,6 +607,11 @@ def session(req: SessionReq):
     """Resolve a profile and return its summary if the snapshot is ready; otherwise
     start the build in the background and return {status:"building"}. The client
     then polls /session/status. Resolution stays synchronous (one fast Steam call)."""
+    # With no demo configured the alias must NOT fall through to vanity
+    # resolution: "demo" is a real Steam custom URL, so the demo button would load
+    # a stranger's public profile, un-anonymized (code review 2026-09-24).
+    if req.profile == DEMO_ALIAS and not DEMO_STEAM_ID:
+        raise HTTPException(status_code=404, detail=DEMO_OFF_MSG)
     _sweep_charts()      # opportunistic cleanup so long-running servers stay bounded
     _sweep_snapshots()   # GC snapshots not rebuilt in SNAPSHOT_TTL_DAYS (DB-driven)
     demo = is_demo(req.profile)

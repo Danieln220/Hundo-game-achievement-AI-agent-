@@ -12,20 +12,18 @@ const STUCK_MSG =
   "The profile build stopped making progress — it may have been interrupted. Please try again.";
 
 
+// The landing page's sign-in controls: the demo is the primary action ("Ask it
+// what to chase next"), Steam second, paste-a-profile third. The landing page
+// supplies the hero copy around it.
 export default function ProfileGate({
   onLoaded,
-  compact = false,
-  coach = false,
+  demoOn,
   request,
 }: {
   onLoaded: (session: SessionResult) => void;
-  // `compact` drops the full-height centering + the heading: the landing page
-  // supplies its own hero copy and just needs the controls.
-  compact?: boolean;
-  // `coach` reorders the controls for the landing page: the demo is the primary
-  // action ("Ask it what to chase next"), Steam second, paste-a-profile third.
-  // Same loading logic either way.
-  coach?: boolean;
+  // Whether the public demo profile is configured. The landing page owns the one
+  // /health probe that answers this (it also warms the free-tier server).
+  demoOn: boolean;
   // A parent can ask the gate to load a profile (the landing page's "Get the
   // guide" buttons enter the demo). A new nonce = a new request.
   request?: { profile: string; nonce: number };
@@ -41,12 +39,6 @@ export default function ProfileGate({
   // Stop polling if the component unmounts mid-build.
   const cancelled = useRef(false);
   useEffect(() => () => { cancelled.current = true; }, []);
-
-  // Warm the free-tier server the moment the gate renders, so it's usually
-  // awake before the user finishes typing or clicks the Steam button. The same
-  // probe tells us whether the public demo profile is configured.
-  const [demoOn, setDemoOn] = useState(coach);
-  useEffect(() => { health().then((h) => setDemoOn(!!h.demo)).catch(() => {}); }, []);
 
   // Returning from "Sign in through Steam": the backend bounced us back with a
   // verified ?steam_id= (or ?login_error=1). Auto-load it, then clean the URL.
@@ -164,12 +156,11 @@ export default function ProfileGate({
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && load()}
-        placeholder={coach ? "steamcommunity.com/id/yourname" : "e.g. daniel"}
+        placeholder="steamcommunity.com/id/yourname"
         disabled={loading}
-        autoFocus={!coach}
       />
       <button onClick={() => load()} disabled={loading || !value.trim()}>
-        {loading ? "Loading…" : coach ? "Load" : "Load my data"}
+        {loading ? "Loading…" : "Load"}
       </button>
     </div>
   );
@@ -190,46 +181,16 @@ export default function ProfileGate({
   );
 
   return (
-    <div className={compact ? "gate gate-compact" : "gate"}>
-      {!compact && (
-        <>
-          <h2>Open your trophy case</h2>
-          <p className="muted">
-            Your achievements, read like rare cards — rarity, roadmaps, and a full
-            profile audit. Enter your Steam alias, ID, or profile link to begin.
-            Game details must be <b>Public</b>.
-          </p>
-        </>
+    <div className="gate gate-compact">
+      {demoOn && (
+        <button className="demo-btn demo-btn-primary" onClick={() => load(DEMO_PROFILE)} disabled={loading}>
+          {loading ? "Loading the demo…" : "Ask it what to chase next"}
+          <span>try it on a real library · no account needed</span>
+        </button>
       )}
-
-      {coach ? (
-        <>
-          {demoOn && (
-            <button className="demo-btn demo-btn-primary" onClick={() => load(DEMO_PROFILE)} disabled={loading}>
-              {loading ? "Loading the demo…" : "Ask it what to chase next"}
-              <span>try it on a real library · no account needed</span>
-            </button>
-          )}
-          {steamButton}
-          <div className="gate-or"><span>or paste a profile</span></div>
-          {pasteRow}
-        </>
-      ) : (
-        <>
-          {pasteRow}
-          {demoOn && (
-            <>
-              <div className="gate-or"><span>or</span></div>
-              <button className="demo-btn" onClick={() => load(DEMO_PROFILE)} disabled={loading}>
-                Look around a demo case →
-                <span>no Steam account needed</span>
-              </button>
-            </>
-          )}
-          <div className="gate-or"><span>or</span></div>
-          {steamButton}
-        </>
-      )}
+      {steamButton}
+      <div className="gate-or"><span>or paste a profile</span></div>
+      {pasteRow}
 
       {loading && (
         <div className="gate-progress">

@@ -91,7 +91,6 @@ button:disabled { opacity: 0.4; cursor: default; }
   min-height: 88vh; display: flex; flex-direction: column; justify-content: center;
   padding: 24px 18px;
 }
-.gate h2 { font-size: 30px; margin-bottom: 10px; line-height: 1.15; }
 .gate-row { display: flex; gap: 9px; margin: 22px 0 8px; }
 .gate-row input { flex: 1; }
 
@@ -398,7 +397,6 @@ button:disabled { opacity: 0.4; cursor: default; }
 
 @media (max-width: 560px) {
   .stat-tiles { grid-template-columns: repeat(2, 1fr); }
-  .gate h2 { font-size: 25px; }
   .bubble { max-width: 95%; }
 }
 

@@ -150,6 +150,15 @@ _saved = m.DEMO_STEAM_ID
 m.DEMO_STEAM_ID = ""
 r = c.get("/demo/plan", headers={"X-Forwarded-For": ip()})
 check("/demo/plan → 404 when no demo is configured", r.status_code == 404, r.status_code)
+# The demo alias must never reach vanity resolution ("demo" is a real Steam
+# custom URL → a stranger's profile under the demo button).
+_resolved, _real_resolve = [], m.resolve_steam_id
+m.resolve_steam_id = lambda p: _resolved.append(p) or "76561197960287930"
+r = c.post("/session", json={"profile": "demo"}, headers={"X-Forwarded-For": ip()})
+check("/session 'demo' → 404 when no demo is configured", r.status_code == 404, r.status_code)
+check("/session 'demo' → readable demo message", "demo isn't available" in str(r.json().get("detail")))
+check("/session 'demo' never calls the Steam resolver", _resolved == [], _resolved)
+m.resolve_steam_id = _real_resolve
 m.DEMO_STEAM_ID = _saved
 
 from data_layer.library import next_plan
