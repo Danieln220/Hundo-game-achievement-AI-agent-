@@ -11,6 +11,12 @@ const POLL_STALL_MS = 3 * 60 * 1000;
 const STUCK_MSG =
   "The profile build stopped making progress — it may have been interrupted. Please try again.";
 
+// What a parent can ask the gate to do (a new nonce = a new request): load a
+// profile, optionally with a question to ask once it's in, or run the Steam
+// sign-in — so every "Sign in through Steam" link on the page shares the gate's
+// wake-before-redirect guard and its progress UI.
+export type GateAction = { profile: string; question?: string } | { steam: true };
+export type GateRequest = GateAction & { nonce: number };
 
 // The landing page's sign-in controls: the demo is the primary action ("Ask it
 // what to chase next"), Steam second, paste-a-profile third. The landing page
@@ -25,12 +31,16 @@ export default function ProfileGate({
   // Whether the public demo profile is configured. The landing page owns the one
   // /health probe that answers this (it also warms the free-tier server).
   demoOn: boolean;
-  // A parent can ask the gate to load a profile (the landing page's "Get the
-  // guide" buttons enter the demo with a question). A new nonce = a new request.
-  request?: { profile: string; nonce: number; question?: string };
+  // The landing page's "Get the guide" buttons (demo + question) and its other
+  // Steam sign-in links come through here.
+  request?: GateRequest;
 }) {
   const [value, setValue] = useState("");
   const [loading, setLoading] = useState(false);
+  // WHAT is loading, so only that control says so (the demo button used to read
+  // "Loading the demo…" during Steam sign-in and pasted-profile loads). Only
+  // meaningful while `loading` is true.
+  const [busy, setBusy] = useState<"demo" | "paste" | "profile" | "signin">("profile");
   const [waking, setWaking] = useState(false); // server cold-starting — retrying quietly
   const [error, setError] = useState<string | null>(null);
   // Real build progress (done/total/pct) from the server; null until the first
@@ -58,7 +68,11 @@ export default function ProfileGate({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { if (request) load(request.profile, request.question); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!request) return;
+    if ("steam" in request) steamLogin();
+    else load(request.profile, request.question);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request?.nonce]);
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -70,11 +84,12 @@ export default function ProfileGate({
   // "Sign in through Steam" is a FULL-PAGE navigation to the API (it must be —
   // the API redirects to Steam). Navigating at a sleeping server would land on
   // Render's own error page, so we hold the click until /health answers.
-  async function steamLogin(e: React.MouseEvent) {
-    e.preventDefault();
+  async function steamLogin(e?: React.MouseEvent) {
+    e?.preventDefault();
     if (loading) return;
     cancelled.current = false;
     setLoading(true);
+    setBusy("signin");
     setError(null);
     setProgress(null);
     try {
@@ -97,6 +112,8 @@ export default function ProfileGate({
     if (!p || loading) return;
     cancelled.current = false;
     setLoading(true);
+    // No `profile` argument = the paste row's own button/Enter.
+    setBusy(profile === undefined ? "paste" : p === DEMO_PROFILE ? "demo" : "profile");
     setError(null);
     setProgress(null);
     try {
@@ -165,7 +182,7 @@ export default function ProfileGate({
         disabled={loading}
       />
       <button onClick={() => load()} disabled={loading || !value.trim()}>
-        {loading ? "Loading…" : "Load"}
+        {loading && busy === "paste" ? "Loading…" : "Load"}
       </button>
     </div>
   );
@@ -189,7 +206,7 @@ export default function ProfileGate({
     <div className="gate gate-compact">
       {demoOn && (
         <button className="demo-btn demo-btn-primary" onClick={() => load(DEMO_PROFILE)} disabled={loading}>
-          {loading ? "Loading the demo…" : "Ask it what to chase next"}
+          {loading && busy === "demo" ? "Loading the demo…" : "Ask it what to chase next"}
           <span>try it on a real library · no account needed</span>
         </button>
       )}
@@ -225,7 +242,13 @@ export default function ProfileGate({
                 <div className="indeterminate-fill" />
               </div>
               <p className="muted small">
-                Fetching your library… <span className="muted">(first time only)</span>
+                {busy === "signin" ? (
+                  "Opening Steam sign-in…"
+                ) : busy === "demo" ? (
+                  "Opening the demo library…"
+                ) : (
+                  <>Fetching your library… <span className="muted">(first time only)</span></>
+                )}
               </p>
             </>
           )}

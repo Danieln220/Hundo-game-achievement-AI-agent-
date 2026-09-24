@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import ProfileGate from "./ProfileGate";
+import ProfileGate, { type GateAction, type GateRequest } from "./ProfileGate";
 import { DEMO_PROFILE, demoPlan, health, steamLoginUrl, withWake, type DemoPlan } from "../api";
 import { tierOf, pctLabel } from "../tcTheme";
 import type { SessionResult } from "../types";
@@ -216,10 +216,21 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
   // "Get the guide" / the example questions enter the demo with that question
   // pre-filled. The question rides INSIDE the request, so the gate hands it back
   // only with the demo load that request started — never with another profile.
-  const [request, setRequest] = useState<{ profile: string; nonce: number; question: string } | undefined>();
-  function askDemo(q: string) {
-    setRequest((r) => ({ profile: DEMO_PROFILE, nonce: (r?.nonce ?? 0) + 1, question: q }));
+  const [request, setRequest] = useState<GateRequest | undefined>();
+  const toGate = (action: GateAction) => {
+    setRequest((r) => ({ ...action, nonce: (r?.nonce ?? 0) + 1 }));
     document.getElementById("top")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  function askDemo(q: string) {
+    toGate({ profile: DEMO_PROFILE, question: q });
+  }
+  // The nav + closing "Sign in through Steam" links are full-page navigations to
+  // the API; at a sleeping server they'd land on Render's error page. They hand
+  // off to the gate instead, which waits for /health (showing its progress up
+  // top) before going to Steam. The href stays for open-in-new-tab.
+  function signInSteam(e: React.MouseEvent) {
+    e.preventDefault();
+    toGate({ steam: true });
   }
   const AskLink = ({ q, children }: { q: string; children: React.ReactNode }) =>
     demoOn ? <button className="landing-ask" onClick={() => askDemo(q)}>{children}</button> : <span className="landing-ask landing-ask-off">{children}</span>;
@@ -240,7 +251,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
           <a href="#help">How it helps</a>
           <a href="#how">Why trust it</a>
           <a href="#next">What's next</a>
-          <a className="landing-nav-steam" href={steamLoginUrl()}>
+          <a className="landing-nav-steam" href={steamLoginUrl()} onClick={signInSteam}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><circle cx="15" cy="9.5" r="2.4" /><circle cx="8.5" cy="15.5" r="2" /><path d="M10.2 14.2 13.2 11" /></svg>
             Sign in through Steam
           </a>
@@ -423,7 +434,7 @@ export default function Landing({ onLoaded }: { onLoaded: (s: SessionResult, que
           </div>
           <div className="landing-close-actions">
             {demoOn && <button className="landing-cta" onClick={() => askDemo("What should I chase next?")}>Ask it what to chase next <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14" /><path d="m13 6 6 6-6 6" /></svg></button>}
-            <a className="landing-cta-ghost" href={steamLoginUrl()}>Sign in through Steam</a>
+            <a className="landing-cta-ghost" href={steamLoginUrl()} onClick={signInSteam}>Sign in through Steam</a>
           </div>
         </div>
         <footer className="landing-foot">
