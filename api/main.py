@@ -788,6 +788,16 @@ def session_status(steam_id: str):
     if status.startswith("failed:"):
         return {"status": "failed", "error": status[len("failed:"):]}
 
+    # Waiting for a free build worker. `queued` tells the client this 0/0 is a
+    # queue, not a stall; a queue that outlives SNAPSHOT_WAIT_MAX died with its
+    # process and won't start on its own.
+    queued_at = _queued_at(status)
+    if queued_at is not None:
+        if time.time() - queued_at > SNAPSHOT_WAIT_MAX:
+            return {"status": "failed", "error": _RETRY_HINT}
+        return {"status": "building", "queued": True,
+                "progress": {"done": 0, "total": 0, "pct": 0}}
+
     prog = cache.get(_progress_key(steam_id)) or "0/0"
     try:
         done_s, total_s = prog.split("/")
@@ -805,9 +815,12 @@ def session_status(steam_id: str):
             return {"status": "failed", "error": row.get("error") or _RETRY_HINT}
         if not status:
             age = _row_age_seconds(row)
-            if row.get("status") == "building" and age is not None and age < SNAPSHOT_WAIT_MAX:
-                return {"status": "building", "progress": {"done": 0, "total": 0, "pct": 0},
-                        "note": "live progress unavailable"}
+            if row.get("status") in ("queued", "building") and age is not None and age < SNAPSHOT_WAIT_MAX:
+                out = {"status": "building", "progress": {"done": 0, "total": 0, "pct": 0},
+                       "note": "live progress unavailable"}
+                if row.get("status") == "queued":
+                    out["queued"] = True
+                return out
             return {"status": "failed", "error": _RETRY_HINT}
 
     pct = int(done * 100 / total) if total else 0

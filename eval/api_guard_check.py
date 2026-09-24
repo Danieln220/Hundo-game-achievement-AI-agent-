@@ -2,7 +2,10 @@
 steam_id validation, question/history caps, /chart payload bound.
 Run: PYTHONPATH=. python eval/api_guard_check.py"""
 import os, sys, time
-os.environ.pop("UPSTASH_REDIS_REST_URL", None)   # in-memory limiter, fresh per run
+# In-memory cache, fresh per run. Set EMPTY rather than popped: config.py calls
+# load_dotenv(), which re-adds a MISSING var from .env (so a pop silently ran this
+# suite against production Upstash) but never overrides one that exists.
+os.environ["UPSTASH_REDIS_REST_URL"] = ""
 os.environ.update(RATE_LIMIT_READ_PER_MIN="3", RATE_LIMIT_CHART_PER_MIN="2",
                   RATE_LIMIT_STATUS_PER_MIN="3")
 from fastapi.testclient import TestClient
@@ -153,13 +156,86 @@ check("/demo/plan → 404 when no demo is configured", r.status_code == 404, r.s
 # The demo alias must never reach vanity resolution ("demo" is a real Steam
 # custom URL → a stranger's profile under the demo button).
 _resolved, _real_resolve = [], m.resolve_steam_id
-m.resolve_steam_id = lambda p: _resolved.append(p) or "76561197960287930"
+m.resolve_steam_id = lambda p: _resolved.append(p) or "76561190000000003"
 r = c.post("/session", json={"profile": "demo"}, headers={"X-Forwarded-For": ip()})
 check("/session 'demo' → 404 when no demo is configured", r.status_code == 404, r.status_code)
 check("/session 'demo' → readable demo message", "demo isn't available" in str(r.json().get("detail")))
 check("/session 'demo' never calls the Steam resolver", _resolved == [], _resolved)
 m.resolve_steam_id = _real_resolve
 m.DEMO_STEAM_ID = _saved
+
+# ── code review 2026-09-24, fix 7: a build waiting for a pool worker is QUEUED,
+# not stuck — the poller gets queued:true (and pauses its stall timer); a queue
+# older than SNAPSHOT_WAIT_MAX died with its process → retry hint; the worker
+# flips it to "building" when it starts. Everything external is stubbed here.
+QID, QID2 = "76561190000000001", "76561190000000002"  # below the lowest real SteamID64 — nobody's account
+_saved_fns = dict(has_snapshot=m.has_snapshot, ensure_snapshot=m.ensure_snapshot,
+                  resolve_steam_id=m.resolve_steam_id, is_private=m.is_private_owned_payload,
+                  record=m._record_snapshot_meta, sweep_c=m._sweep_charts, sweep_s=m._sweep_snapshots,
+                  pool=m._BUILD_POOL, get_snap=m.db.get_snapshot, up_snap=m.db.upsert_snapshot,
+                  up_user=m.db.upsert_user, owned=m.steam_client.get_owned_games)
+_db_writes = []
+m.has_snapshot = lambda s: False
+m.db.get_snapshot = lambda s: None
+m.db.upsert_snapshot = lambda s, **kw: _db_writes.append(kw.get("status"))
+m.db.upsert_user = lambda *a, **kw: None
+status = lambda sid: c.get("/session/status", params={"steam_id": sid},
+                           headers={"X-Forwarded-For": ip()}).json()
+
+m.cache.set(m._status_key(QID), m._queued_status(), 60)
+r = status(QID)
+check("status: fresh queue → building + queued:true", r.get("status") == "building" and r.get("queued") is True, r)
+m.cache.set(m._status_key(QID), f"queued:{int(time.time()) - m.SNAPSHOT_WAIT_MAX - 5}", 60)
+r = status(QID)
+check("status: queue older than SNAPSHOT_WAIT_MAX → failed + retry hint",
+      r.get("status") == "failed" and "load the profile again" in r.get("error", ""), r)
+m.cache.set(m._status_key(QID), "building", 60)
+m.cache.set(m._progress_key(QID), "3/10", 60)
+r = status(QID)
+check("status: running build → progress, no queued flag",
+      r.get("status") == "building" and "queued" not in r and r["progress"]["done"] == 3, r)
+# Redis down / key gone → the DB row is the fallback, and it knows "queued" too
+m.db.get_snapshot = lambda s: {"status": "queued", "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+r = status(QID2)
+check("status: no cache entry + DB row 'queued' → queued:true", r.get("status") == "building" and r.get("queued") is True, r)
+m.db.get_snapshot = lambda s: None
+
+# /session marks the build queued BEFORE it reaches the pool (DB mirror too)
+_submitted = []
+class _Pool:
+    def submit(self, fn, sid, *a):
+        _submitted.append(m.cache.get(m._status_key(sid)))
+m._BUILD_POOL = _Pool()
+m.resolve_steam_id = lambda p: QID2
+m.is_private_owned_payload = lambda o: False
+m.steam_client.get_owned_games = lambda s: {"response": {"game_count": 1}}
+m._sweep_charts = m._sweep_snapshots = lambda: 0
+_db_writes.clear()
+r = c.post("/session", json={"profile": "somebody"}, headers={"X-Forwarded-For": ip()}).json()
+check("/session: new build is queued when submitted",
+      r.get("status") == "building" and len(_submitted) == 1 and str(_submitted[0]).startswith("queued:"), (r, _submitted))
+check("/session: DB row mirrors 'queued'", _db_writes == ["queued"], _db_writes)
+# a refresh while one is queued doesn't stack a second build
+_submitted.clear()
+m.cache.set(m._status_key(QID), m._queued_status(), 60)
+check("refresh while queued → not started again", m._refresh_in_background(QID) is False and _submitted == [], _submitted)
+
+# the worker flips queued → building as it starts; only a FIRST build writes the DB row
+_seen = {}
+m.ensure_snapshot = lambda sid, **kw: _seen.setdefault(sid, m.cache.get(m._status_key(sid)))
+m._record_snapshot_meta = lambda sid: None
+_db_writes.clear()
+m.cache.set(m._status_key(QID), m._queued_status(), 60)
+m._run_build(QID, {})
+check("worker: queued → building when it starts", _seen.get(QID) == "building", _seen)
+check("worker: first build mirrors 'building' to the DB", _db_writes == ["building"], _db_writes)
+_db_writes.clear()
+m._run_build(QID2, None, True)
+check("worker: a refresh leaves the DB row alone at start", "building" not in _db_writes, _db_writes)
+
+(m.has_snapshot, m.ensure_snapshot, m.resolve_steam_id, m.is_private_owned_payload, m._record_snapshot_meta,
+ m._sweep_charts, m._sweep_snapshots, m._BUILD_POOL, m.db.get_snapshot, m.db.upsert_snapshot,
+ m.db.upsert_user, m.steam_client.get_owned_games) = _saved_fns.values()
 
 from data_layer.library import next_plan
 _lib = {

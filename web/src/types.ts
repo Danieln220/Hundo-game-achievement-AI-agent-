@@ -107,7 +107,8 @@ export type SessionResponse =
 // /session/status — polled while a snapshot builds in the background.
 export type SessionStatus =
   | ({ status: "ready" } & SessionResult)
-  | { status: "building"; progress: { done: number; total: number; pct: number } }
+  // `queued`: waiting for a free build worker — a queue, not a stall.
+  | { status: "building"; progress: { done: number; total: number; pct: number }; queued?: boolean }
   | { status: "failed"; error: string };
 
 export interface Turn {

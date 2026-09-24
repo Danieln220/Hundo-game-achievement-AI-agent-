@@ -46,6 +46,8 @@ export default function ProfileGate({
   // Real build progress (done/total/pct) from the server; null until the first
   // progress tick (or for the fast cached path, which never shows a bar).
   const [progress, setProgress] = useState<{ done: number; total: number; pct: number } | null>(null);
+  // The build is waiting for a free server worker (other libraries are building).
+  const [queued, setQueued] = useState(false);
 
   // Stop polling if the component unmounts mid-build.
   const cancelled = useRef(false);
@@ -92,6 +94,7 @@ export default function ProfileGate({
     setBusy("signin");
     setError(null);
     setProgress(null);
+    setQueued(false);
     try {
       const ok = await withWake(() => health());
       if (ok === undefined) return; // unmounted mid-wait
@@ -116,6 +119,7 @@ export default function ProfileGate({
     setBusy(profile === undefined ? "paste" : p === DEMO_PROFILE ? "demo" : "profile");
     setError(null);
     setProgress(null);
+    setQueued(false);
     try {
       const r = await withWake(() => session(p));
       if (r === undefined) return; // unmounted mid-wait
@@ -158,10 +162,15 @@ export default function ProfileGate({
           setProgress(null);
           return;
         }
+        // Waiting for a free build worker is a queue, not a stall: hold the stall
+        // timer while queued (the overall POLL_MAX_MS cap still applies, and the
+        // server turns a queue that never drains into a "failed" of its own).
+        if (st.queued) lastMovedAt = Date.now();
         if (st.progress.done !== lastDone) {
           lastDone = st.progress.done;
           lastMovedAt = Date.now();
         }
+        setQueued(!!st.queued);
         setProgress(st.progress);
       }
     } catch (e) {
@@ -224,6 +233,16 @@ export default function ProfileGate({
               <p className="muted small">
                 Waking the server — free hosting naps when idle.{" "}
                 <span className="muted">This can take up to a minute…</span>
+              </p>
+            </>
+          ) : queued ? (
+            <>
+              <div className="indeterminate-bar">
+                <div className="indeterminate-fill" />
+              </div>
+              <p className="muted small">
+                Waiting for a free builder — other libraries are being built right now.{" "}
+                <span className="muted">Yours starts automatically.</span>
               </p>
             </>
           ) : progress && progress.total > 0 ? (

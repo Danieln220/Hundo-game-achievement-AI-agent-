@@ -137,9 +137,9 @@ def upsert_snapshot(steam_id: str, *, status: str = "ready",
                     games: int | None = None, total_achievements: int | None = None,
                     total_unlocked: int | None = None, location: str | None = None,
                     error: str | None = None) -> None:
-    """Record snapshot metadata (freshness + cleanup + header stats). Called at
-    build START (status="building"), on success ("ready" + stats) and on failure
-    ("failed" + error). Only non-None fields are sent (23.3e): a failed rebuild
+    """Record snapshot metadata (freshness + cleanup + header stats). Called when a
+    first build is QUEUED (status="queued"), when a worker STARTS it ("building"),
+    on success ("ready" + stats) and on failure ("failed" + error). Only non-None fields are sent (23.3e): a failed rebuild
     used to NULL the cached header stats of the previous good build.
 
     This DB row is ALSO the fallback source of build status for /session/status
