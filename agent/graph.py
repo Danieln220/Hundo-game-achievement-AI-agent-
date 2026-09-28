@@ -451,11 +451,39 @@ def inspect_schema_node(state: AgentState, frames: dict[str, pd.DataFrame]) -> A
     return {"schema": _build_schema(frames)}
 
 
+# The app's OWN how-to question, sent verbatim by its "How do I get this?" /
+# "Get the guide" buttons (17.14). Its route is known before any model looks at
+# it, so it skips the Pro planner — whose reasoning was ~89% of a 50s answer.
+# Deliberately strict: a MISS just takes the normal planner path, a false
+# positive would answer a compound question with only a guide. The game part may
+# end in its own '?' (real titles do) but can't hold a second sentence.
+_HOWTO_TEMPLATE = re.compile(r'How do I unlock "(.{1,200}?)" in ([^?\n]{1,200}\??)\?')
+
+
+def match_howto_template(question: str) -> Optional[tuple[str, str]]:
+    """(achievement, game) when `question` is exactly the app's how-to template."""
+    m = _HOWTO_TEMPLATE.fullmatch((question or "").strip())
+    if not m:
+        return None
+    ach, game = m.group(1).strip(), m.group(2).strip()
+    return (ach, game) if ach and game else None
+
+
 def plan_code_node(state: AgentState) -> AgentState:
     """PRO model: in ONE call, decide the route + interpretation AND (for analysis)
     write the pandas code. Merging the old planner + write_code saves a whole LLM
     round-trip per question. On a retry, feed back the agent's OWN previous code +
     the error/critique so it fixes the specific mistake instead of re-deriving blind."""
+    hit = match_howto_template(state["question"])
+    if hit:
+        return {
+            "plan": f'- Guide request for "{hit[0]}" in {hit[1]} — no planning needed\n'
+                    "- Search the web for a guide and summarize the steps",
+            "route": "howto",
+            "interpretation": None,
+            "clarify_question": None,
+        }
+
     error_context = ""
     problem = state.get("last_error") or state.get("validation_error") or state.get("verification_error")
     if problem and state.get("last_code"):
