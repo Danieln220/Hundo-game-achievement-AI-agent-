@@ -258,5 +258,65 @@ check("next_plan splits the meta-achievement out", _plan["meta"] and _plan["meta
 check("next_plan keeps the hidden flag", _plan["locked"][2]["hidden"] is True)
 check("next_plan → None when every game is complete", next_plan({"curator": {}, "games": [_lib["games"][0]]}) is None)
 
+# ── 17.14: the app's how-to template shares ONE cached guide across users ─────
+# Everything external is stubbed; the cache is the in-memory one (see top).
+GQ = 'How do I unlock "Getting Greedy" in Dragon Ball Z: Kakarot?'
+GQ_CAPS = 'How do I unlock "Getting Greedy" in DRAGON BALL Z: KAKAROT?'
+A, B = "76561190000000011", "76561190000000012"   # below the lowest real SteamID64
+key = lambda q, sid, mem="", hist=None: m._answer_cache_key(
+    m.AskReq(question=q, steam_id=sid, history=hist), mem, sid)
+kA = key(GQ, A)
+check("template → shared guide key", bool(kA) and kA.startswith(m._SHARED_PREFIX), kA)
+check("shared key: same for another user, other memory, a follow-up, other casing",
+      kA == key(GQ, B, "- Goal: 100% Hollow Knight") == key(GQ, B, hist=[{"question": "q", "answer": "a"}])
+      == key(GQ_CAPS, B))
+check("shared key: another achievement → another key",
+      kA != key('How do I unlock "Only the Finest" in Dragon Ball Z: Kakarot?', A))
+check("typed how-to (no quotes) keeps the per-user path",
+      not (key("How do I unlock Getting Greedy in Dragon Ball Z: Kakarot?", A) or "").startswith(m._SHARED_PREFIX))
+
+SRC = [{"title": "Guide", "url": "https://example.com/g", "content": "summon Shenron"}]
+m._answer_cache_put(kA, {"route": "howto", "answer": "Summon Shenron 5 times.", "sources": SRC,
+                         "plan": "p", "done": True, "question": GQ, "steam_id": A,
+                         "memory": "- A's private goal", "llm_usage": {"llm_calls": 1}})
+hit = m._answer_cache_get(kA, GQ_CAPS, B)
+check("shared hit serves the guide", hit and hit["answer"] == "Summon Shenron 5 times." and hit["sources"] == SRC, hit)
+check("shared hit carries the REQUESTER's echo, not the first asker's",
+      hit and hit["steam_id"] == B and hit["question"] == GQ_CAPS and hit.get("cached") is True, hit)
+check("shared entry never stores memory / usage", hit and "memory" not in hit and "llm_usage" not in hit, hit)
+hit = m._answer_cache_get(kA, GQ, m.DEMO_STEAM_ID or A, demo=True)
+check("shared hit for the demo → alias, never a real id", hit and hit["steam_id"] == m.DEMO_ALIAS, hit)
+
+kN = key('How do I unlock "Nope" in Nowhere?', A)
+m._answer_cache_put(kN, {"route": "howto", "answer": "I couldn't find a guide", "sources": [], "done": True})
+check("a sourceless 'couldn't find a guide' is NOT cached (shared)", m._answer_cache_get(kN) is None)
+kP = key("How do I get the nope achievement in Nowhere?", A)
+if kP:
+    m._answer_cache_put(kP, {"route": "howto", "answer": "I couldn't find a guide", "sources": [], "done": True})
+check("…nor on the per-user path", not kP or m._answer_cache_get(kP) is None)
+kX = key('How do I unlock "Odd" in Route?', A)
+m._answer_cache_put(kX, {"route": "analysis", "answer": "42", "done": True})
+check("a shared key only ever stores a how-to", m._answer_cache_get(kX) is None)
+
+# end to end: the second user's click never reaches the agent
+_saved_ask = dict(run=m.run, fast=m.fast_answer, log=m.db.log_query)
+_runs = []
+def _fake_run(q, steam_id=None, history=None, with_insight=False, memory=None):
+    _runs.append(steam_id)
+    return {"route": "howto", "answer": "Collect the balls.", "sources": SRC, "plan": "p",
+            "done": True, "question": q, "steam_id": steam_id, "memory": memory}
+m.run, m.fast_answer, m.db.log_query = _fake_run, (lambda q, s: None), (lambda *a, **kw: None)
+Q2 = 'How do I unlock "Wish Granted" in Dragon Ball Z: Kakarot?'
+r1 = c.post("/ask", json={"question": Q2, "steam_id": A}, headers={"X-Forwarded-For": ip()}).json()
+r2 = c.post("/ask", json={"question": Q2, "steam_id": B}, headers={"X-Forwarded-For": ip()}).json()
+check("/ask: first asker runs the agent, second is served from the shared guide",
+      _runs == [A] and not r1.get("cached") and r2.get("cached") is True and r2.get("steam_id") == B,
+      (_runs, r2.get("steam_id")))
+body = c.post("/ask/stream", json={"question": Q2, "steam_id": B},
+              headers={"X-Forwarded-For": ip()}).text
+check("/ask/stream: shared guide is one instant result event, no agent run",
+      _runs == [A] and body.count("event: result") == 1 and '"cached": true' in body, (_runs, body[:120]))
+m.run, m.fast_answer, m.db.log_query = _saved_ask["run"], _saved_ask["fast"], _saved_ask["log"]
+
 print(f"\n{'ALL PASSED' if not fails else f'{fails} FAILED'}")
 sys.exit(1 if fails else 0)

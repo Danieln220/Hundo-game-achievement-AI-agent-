@@ -32,7 +32,7 @@ from config import (
     SNAPSHOT_WAIT_MAX, AUTH_SECRET, AUTH_TOKEN_TTL_DAYS,
     DEMO_STEAM_ID, DEMO_ALIAS, DEMO_DISPLAY_NAME, DEMO_ASK_PER_DAY,
 )
-from agent import run, run_stream, make_chart, distill_memory, fast_answer
+from agent import run, run_stream, make_chart, distill_memory, fast_answer, match_howto_template
 from data_layer import steam_client
 from data_layer import storage
 from data_layer import cache
@@ -241,6 +241,16 @@ def _serialize(result: dict, demo: bool = False) -> dict:
 # either dialogue-dependent or already one cheap Flash call.
 _UNCACHEABLE_ROUTES = {"", "chitchat", "clarify"}
 
+# Shared guide cache (17.14). The app's own how-to question (`How do I unlock
+# "<ach>" in <game>?`) is answered from a web search alone — nothing about the
+# asker, their memory, history or snapshot goes into it — so ONE entry per
+# (game, achievement) serves every user, and the demo's guide buttons are instant
+# after the first click. Only these fields are stored; the per-user echo
+# (steam_id, question, memory…) is re-stamped for each requester, never shared.
+_SHARED_PREFIX = "ans:howto:v1:"
+_SHARED_TTL_SECONDS = 7 * 86400          # a guide doesn't go stale in hours
+_SHARED_FIELDS = ("route", "plan", "interpretation", "sources", "answer", "done")
+
 
 def _norm_question(q: str) -> str:
     return re.sub(r"\s+", " ", (q or "").strip().lower()).strip(" ?!.")
@@ -268,8 +278,16 @@ def _answer_cache_key(req: "AskReq", memory: str, steam_id: Optional[str] = None
     """Cache key, or None when this request shouldn't touch the cache: caching is
     disabled, it's a follow-up (history changes the answer), or the snapshot has
     no local build marker yet. The memory FINGERPRINT (not its text) is hashed in,
-    so a personalization change misses but a reworded one doesn't (23.6g)."""
-    if ANSWER_CACHE_TTL_SECONDS <= 0 or req.history:
+    so a personalization change misses but a reworded one doesn't (23.6g).
+    The app's how-to template gets the SHARED key instead (17.14) — even as a
+    follow-up, since the question names its achievement and game in full."""
+    if ANSWER_CACHE_TTL_SECONDS <= 0:
+        return None
+    guide = match_howto_template(req.question)
+    if guide:
+        ach, game = (re.sub(r"\s+", " ", s).lower() for s in guide)
+        return _SHARED_PREFIX + hashlib.sha1(f"{game}|{ach}".encode()).hexdigest()
+    if req.history:
         return None
     # `steam_id` is the RESOLVED id (the demo alias maps to a real one) — keying
     # on the alias would look up a snapshot that doesn't exist and silently
@@ -285,7 +303,8 @@ def _answer_cache_key(req: "AskReq", memory: str, steam_id: Optional[str] = None
     return f"ans:{sid}:{ver}:{h}"
 
 
-def _answer_cache_get(key: Optional[str]) -> Optional[dict]:
+def _answer_cache_get(key: Optional[str], question: str = "", steam_id: Optional[str] = None,
+                      demo: bool = False) -> Optional[dict]:
     if not key:
         return None
     raw = cache.get(key)
@@ -296,6 +315,9 @@ def _answer_cache_get(key: Optional[str]) -> Optional[dict]:
     except (ValueError, TypeError):
         return None
     out.pop("llm_usage", None)  # those tokens were spent by the ORIGINAL request
+    if key.startswith(_SHARED_PREFIX):
+        # Stamp THIS requester's echo onto the shared guide (demo stays anonymous).
+        out.update(question=question, steam_id=DEMO_ALIAS if demo else steam_id)
     out["cached"] = True
     return out
 
@@ -307,8 +329,18 @@ def _answer_cache_put(key: Optional[str], serialized: dict) -> None:
     route = serialized.get("route") or ""
     if route in _UNCACHEABLE_ROUTES or serialized.get("error") or not serialized.get("answer"):
         return
+    # A how-to with no sources is "couldn't find a guide" — a search outage, not
+    # an answer; caching it would pin the failure.
+    if route == "howto" and not serialized.get("sources"):
+        return
+    ttl = ANSWER_CACHE_TTL_SECONDS
+    if key.startswith(_SHARED_PREFIX):
+        if route != "howto":
+            return
+        serialized = {k: serialized[k] for k in _SHARED_FIELDS if k in serialized}
+        ttl = _SHARED_TTL_SECONDS
     try:
-        cache.set(key, json.dumps(serialized), ANSWER_CACHE_TTL_SECONDS)
+        cache.set(key, json.dumps(serialized), ttl)
     except (TypeError, ValueError):
         pass  # non-serializable payload → just don't cache it
 
@@ -893,7 +925,7 @@ def ask(req: AskReq, request: Request):
     mem = _memory_for(sid) if mem_ok else ""
     # Answer cache (19.4): a repeat of a cached question skips the agent entirely.
     ckey = _answer_cache_key(req, mem, sid)
-    hit = _answer_cache_get(ckey)
+    hit = _answer_cache_get(ckey, req.question, sid, demo)
     if hit:
         db.log_query(sid, req.question, f"cached:{hit.get('route') or ''}",
                      int((time.perf_counter() - t0) * 1000))
@@ -943,7 +975,7 @@ def ask_stream(req: AskReq, request: Request):
         mem = _memory_for(sid) if mem_ok else ""
         # Answer cache (19.4): a hit is a single instant result event, no agent.
         ckey = _answer_cache_key(req, mem, sid)
-        hit = _answer_cache_get(ckey)
+        hit = _answer_cache_get(ckey, req.question, sid, demo)
         if hit:
             db.log_query(sid, req.question, f"cached:{hit.get('route') or ''}",
                          int((time.perf_counter() - t0) * 1000))
