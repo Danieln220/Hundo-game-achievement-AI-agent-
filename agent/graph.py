@@ -24,7 +24,7 @@ from config import MAX_RETRIES, DEEPSEEK_MODEL_PRO, DEEPSEEK_MODEL_FLASH, ROADMA
 from data_layer import steam_client
 from .sandbox import run_user_code
 from .llm import call_llm, call_with_usage, current_usage
-from .search import web_search, cached_search, cached_json, cache_get, cache_put
+from .search import cached_search, cached_json, cache_get, cache_put
 
 
 class AgentState(TypedDict, total=False):
@@ -607,7 +607,14 @@ def howto_search_node(state: AgentState) -> AgentState:
     practical answer with sources. Produces the FINAL answer (routes to END),
     so it must not depend on the analysis pipeline's last_result."""
     question = state["question"]
-    results = web_search(f"{question} Steam achievement guide", max_results=3)
+    # Shared search cache (17.14): the results depend only on the question text,
+    # so everyone asking it costs ONE Tavily call. Keyed on the normalized text —
+    # the app's buttons send Steam's ALL-CAPS title or a title-cased one for the
+    # same achievement. Its own namespace: the roadmap's `howto:` entries hold a
+    # different query with ONE result. An empty result (outage) is never cached.
+    norm = re.sub(r"\s+", " ", question.strip().lower()).rstrip(" ?!.")
+    results = cached_search(f"howto_q:{norm}", f"{question} Steam achievement guide",
+                            max_results=3)
 
     if not results:
         return {

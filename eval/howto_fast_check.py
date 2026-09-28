@@ -4,11 +4,14 @@ routes straight to how-to with ZERO planner calls; anything else — including
 near-misses — keeps the normal planner path. A miss is safe (the planner still
 routes it); a false positive would answer a compound question with only a guide.
 Run: PYTHONPATH=. python eval/howto_fast_check.py"""
-import sys
+import os, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# In-memory/disk only: set EMPTY (load_dotenv never overrides an existing var,
+# but re-adds a missing one — a pop would silently hit production Upstash).
+os.environ["UPSTASH_REDIS_REST_URL"] = ""
 
-from agent import graph
+from agent import graph, search
 from agent.graph import match_howto_template, plan_code_node
 
 # (question, expected (achievement, game) or None)
@@ -70,6 +73,44 @@ check("near-miss -> planner still called once", len(calls) == 1, str(calls))
 # the graph wires route=howto to the how-to node
 check("route howto -> howto_search node",
       graph.route_after_plan_code({"route": "howto"}) == "howto_search")
+
+# ── part 3: the chat how-to search goes through the SHARED search cache ───────
+# Tavily is stubbed and the cache points at a temp dir — no network, no prod.
+search._CACHE_DIR = Path(tempfile.mkdtemp(prefix="howto_cache_"))
+tavily = []
+outage = [False]
+def _fake_search(query, max_results=3):
+    tavily.append(query)
+    return [] if outage[0] else [{"title": f"r{i}", "url": f"https://example.com/{i}", "content": "c"}
+                                 for i in range(max_results)]
+search.web_search = _fake_search
+
+def guide(q):
+    return graph.howto_search_node({"question": q})
+
+g1 = guide(CASES[0][0])
+check("first ask → 1 search, 3 sources", len(tavily) == 1 and len(g1["sources"]) == 3, (tavily, g1.get("sources")))
+g2 = guide(CASES[1][0].replace("Only the Finest", "Getting Greedy"))   # same ach, ALL-CAPS title
+check("same guide, Steam's ALL-CAPS title → cached, no new search",
+      len(tavily) == 1 and g2["sources"] == g1["sources"], tavily)
+guide("how do I get  Getting Greedy in kakarot?")
+guide("How do I get getting greedy in Kakarot")
+check("typed how-to: repeats (case/space/'?') share one search", len(tavily) == 2, tavily)
+check("…and the query sent is the asker's own wording + the guide suffix",
+      tavily[1] == "how do I get  Getting Greedy in kakarot? Steam achievement guide", tavily[1])
+guide('How do I unlock "Only the Finest" in Dragon Ball Z: Kakarot?')
+check("another achievement → its own search", len(tavily) == 3, tavily)
+
+outage[0] = True
+q_out = 'How do I unlock "Wish Granted" in Dragon Ball Z: Kakarot?'
+g_out = guide(q_out)
+check("search outage → honest 'couldn't find', no sources", g_out["sources"] == [] and "couldn't find" in g_out["answer"])
+outage[0] = False
+g_back = guide(q_out)
+check("outage was NOT cached → next ask searches again and succeeds",
+      len(tavily) == 5 and len(g_back["sources"]) == 3, tavily)
+check("roadmap's per-achievement link cache is a different namespace",
+      search.cache_get("howto:dragon ball z: kakarot:getting greedy") is None)
 
 print("ALL PASSED" if all(_res) else f"{_res.count(False)} FAILED")
 sys.exit(0 if all(_res) else 1)
