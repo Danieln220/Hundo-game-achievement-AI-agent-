@@ -1,7 +1,7 @@
 """Offline checks for the 23.2 API guards (no network/LLM): rate-limit coverage,
 steam_id validation, question/history caps, /chart payload bound.
 Run: PYTHONPATH=. python eval/api_guard_check.py"""
-import os, sys, time
+import hashlib, os, sys, time
 # In-memory cache, fresh per run. Set EMPTY rather than popped: config.py calls
 # load_dotenv(), which re-adds a MISSING var from .env (so a pop silently ran this
 # suite against production Upstash) but never overrides one that exists.
@@ -267,6 +267,9 @@ key = lambda q, sid, mem="", hist=None: m._answer_cache_key(
     m.AskReq(question=q, steam_id=sid, history=hist), mem, sid)
 kA = key(GQ, A)
 check("template → shared guide key", bool(kA) and kA.startswith(m._SHARED_PREFIX), kA)
+# pinned: guides already cached in production (since 9e0f07e) must keep hitting
+check("shared key format unchanged: prefix + sha1('game|achievement')",
+      kA == m._SHARED_PREFIX + hashlib.sha1(b"dragon ball z: kakarot|getting greedy").hexdigest(), kA)
 check("shared key: same for another user, other memory, a follow-up, other casing",
       kA == key(GQ, B, "- Goal: 100% Hollow Knight") == key(GQ, B, hist=[{"question": "q", "answer": "a"}])
       == key(GQ_CAPS, B))

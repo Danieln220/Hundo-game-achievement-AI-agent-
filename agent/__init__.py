@@ -15,7 +15,7 @@ from typing import Optional
 from config import STEAM_ID, DEEPSEEK_MODEL_FLASH
 from data_layer.snapshot import load_frames, snapshot_version
 from .graph import build_graph, generate_chart_spec
-from .graph import match_howto_template  # noqa: F401 — public seam (API keys the shared guide cache)
+from .graph import howto_identity  # noqa: F401 — public seam (API keys the shared guide cache)
 from .fastpath import fast_answer  # noqa: F401 — public seam (API calls it before run())
 from .llm import call_llm, new_usage, use_usage, reset_usage, call_with_usage
 

@@ -24,7 +24,7 @@ from config import MAX_RETRIES, DEEPSEEK_MODEL_PRO, DEEPSEEK_MODEL_FLASH, ROADMA
 from data_layer import steam_client
 from .sandbox import run_user_code
 from .llm import call_llm, call_with_usage, current_usage
-from .search import cached_search, cached_json, cache_get, cache_put
+from .search import web_search, cached_search, cached_json, cache_get, cache_put
 
 
 class AgentState(TypedDict, total=False):
@@ -469,6 +469,26 @@ def match_howto_template(question: str) -> Optional[tuple[str, str]]:
     return (ach, game) if ach and game else None
 
 
+def howto_identity(question: str) -> Optional[str]:
+    """`game|achievement` (lowercased, whitespace collapsed) for the app's how-to
+    template, else None. The ONE identity every shared guide cache keys on — the
+    API's answer cache and the search cache below — so Steam's ALL-CAPS title and
+    the landing's title-cased one land on the same entry. Only a question that
+    NAMES its achievement and game gets one: a follow-up like "how do I unlock
+    it?" means something different in every conversation and must never share."""
+    hit = match_howto_template(question)
+    if not hit:
+        return None
+    ach, game = (re.sub(r"\s+", " ", s).lower() for s in hit)
+    return f"{game}|{ach}"
+
+
+# Shared how-to SEARCH cache key. The version covers the cached value's shape —
+# the query wording and result count in howto_search_node — so bump it when
+# either changes, or old-shape results keep being served until they expire.
+_HOWTO_SEARCH_KEY = "howto_guide:v1:"
+
+
 def plan_code_node(state: AgentState) -> AgentState:
     """PRO model: in ONE call, decide the route + interpretation AND (for analysis)
     write the pandas code. Merging the old planner + write_code saves a whole LLM
@@ -607,14 +627,19 @@ def howto_search_node(state: AgentState) -> AgentState:
     practical answer with sources. Produces the FINAL answer (routes to END),
     so it must not depend on the analysis pipeline's last_result."""
     question = state["question"]
-    # Shared search cache (17.14): the results depend only on the question text,
-    # so everyone asking it costs ONE Tavily call. Keyed on the normalized text —
-    # the app's buttons send Steam's ALL-CAPS title or a title-cased one for the
-    # same achievement. Its own namespace: the roadmap's `howto:` entries hold a
-    # different query with ONE result. An empty result (outage) is never cached.
-    norm = re.sub(r"\s+", " ", question.strip().lower()).rstrip(" ?!.")
-    results = cached_search(f"howto_q:{norm}", f"{question} Steam achievement guide",
-                            max_results=3)
+    query = f"{question} Steam achievement guide"
+    # Shared search cache (17.14) — ONLY for a question that names its achievement
+    # and game (the app's guide buttons): those results are the same for everyone,
+    # so they cost one Tavily call in total. Any other how-to (typed, or a
+    # follow-up like "how do I unlock it?") depends on its conversation, so it
+    # searches fresh and is never shared. Its own namespace: the roadmap's
+    # `howto:` entries hold a different query with ONE result. An empty result
+    # (outage) is never cached.
+    ident = howto_identity(question)
+    if ident:
+        results = cached_search(_HOWTO_SEARCH_KEY + ident, query, max_results=3)
+    else:
+        results = web_search(query, max_results=3)
 
     if not results:
         return {

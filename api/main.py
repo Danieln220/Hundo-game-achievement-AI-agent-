@@ -32,7 +32,7 @@ from config import (
     SNAPSHOT_WAIT_MAX, AUTH_SECRET, AUTH_TOKEN_TTL_DAYS,
     DEMO_STEAM_ID, DEMO_ALIAS, DEMO_DISPLAY_NAME, DEMO_ASK_PER_DAY,
 )
-from agent import run, run_stream, make_chart, distill_memory, fast_answer, match_howto_template
+from agent import run, run_stream, make_chart, distill_memory, fast_answer, howto_identity
 from data_layer import steam_client
 from data_layer import storage
 from data_layer import cache
@@ -283,10 +283,9 @@ def _answer_cache_key(req: "AskReq", memory: str, steam_id: Optional[str] = None
     follow-up, since the question names its achievement and game in full."""
     if ANSWER_CACHE_TTL_SECONDS <= 0:
         return None
-    guide = match_howto_template(req.question)
+    guide = howto_identity(req.question)
     if guide:
-        ach, game = (re.sub(r"\s+", " ", s).lower() for s in guide)
-        return _SHARED_PREFIX + hashlib.sha1(f"{game}|{ach}".encode()).hexdigest()
+        return _SHARED_PREFIX + hashlib.sha1(guide.encode()).hexdigest()
     if req.history:
         return None
     # `steam_id` is the RESOLVED id (the demo alias maps to a real one) — keying
